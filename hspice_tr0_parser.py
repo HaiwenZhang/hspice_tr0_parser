@@ -43,7 +43,7 @@ def hspice_tr0_read(filename, debug=0):
 	
 	Returns ``None`` if an error occurs during reading. 
 	"""
-	return _tr0_parser.tr0_read(filename, debug)
+	return _hspcie_tr0_parser.tr0_read(filename, debug)
 
 def hspice_tr0_to_raw(input_path, output_path, debug=0):
 	"""
@@ -62,4 +62,4 @@ def hspice_tr0_to_raw(input_path, output_path, debug=0):
 		>>> hspice_tr0_to_raw('simulation.tr0', 'simulation.raw')
 		True
 	"""
-	return _tr0_parser.tr0_to_raw(input_path, output_path, debug)
+	return _hspcie_tr0_parser.tr0_to_raw(input_path, output_path, debug)

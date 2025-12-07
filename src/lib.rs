@@ -136,7 +136,7 @@ fn tr0_to_raw(_py: Python, input_path: &str, output_path: &str, debug: i32) -> P
 
 /// Python module definition
 #[pymodule]
-fn _tr0_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _hspcie_tr0_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tr0_read, m)?)?;
     m.add_function(wrap_pyfunction!(tr0_to_raw, m)?)?;
     Ok(())
