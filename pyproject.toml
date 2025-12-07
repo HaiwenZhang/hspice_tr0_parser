@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",
 ]
-dependencies = ["numpy"]
+dependencies = ["numpy>=2.0"]
 
 [project.optional-dependencies]
 dev = ["maturin", "pytest"]
