@@ -1,12 +1,12 @@
 [package]
-name = "tr0parser"
+name = "hspicetr0parser"
 version = "1.1.0"
 edition = "2021"
 description = "Read HSPICE binary files"
 license = "MIT"
 
 [lib]
-name = "_tr0_parser"
+name = "_hspcie_tr0_parser"
 crate-type = ["cdylib"]
 
 [dependencies]

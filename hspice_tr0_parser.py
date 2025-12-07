@@ -3,7 +3,7 @@
 Rust implementation with PyO3 by Haiwen Zhang
 """
 
-import _tr0_parser
+import _hspcie_tr0_parser
 from numpy import array
 from time import strftime
 

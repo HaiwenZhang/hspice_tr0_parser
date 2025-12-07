@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "tr0parser"
+name = "hspicetr0parser"
 version = "1.0.0"
 description = "Read HSPICE binary files"
 readme = "README.md"
@@ -24,4 +24,4 @@ dev = ["maturin", "pytest"]
 [tool.maturin]
 features = ["pyo3/extension-module"]
 python-source = "."
-module-name = "_tr0_parser"
+module-name = "_hspcie_tr0_parser"

@@ -1,10 +1,14 @@
-# tr0parser
+# hspicetr0parser
+
+[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://www.python.org/)
+[![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
 
 Read and convert HSPICE binary output files (.tr0) from Python.
 
 ## Overview
 
-This package provides functions to:
+This package provides high-performance functions to:
 
 - **Read** HSPICE binary output files (.tr0) and return data as NumPy arrays
 - **Convert** HSPICE .tr0 files to SPICE3 binary raw format (.raw)
@@ -13,14 +17,15 @@ Based on the original PyOPUS implementation by Janez Puhan, rewritten in Rust wi
 
 ## Features
 
-- 🚀 **High Performance**: Memory-mapped I/O and bulk data processing
-- 📦 **Zero Dependencies**: Pure Rust implementation with PyO3 bindings
-- 🔄 **Format Conversion**: Convert .tr0 to SPICE3 .raw format
-- 📊 **NumPy Integration**: Direct NumPy array output
+- 🚀 **High Performance**: Memory-mapped I/O, parallel processing with Rayon, and bulk data conversion
+- 📦 **Minimal Dependencies**: Pure Rust implementation with PyO3 bindings
+- 🔄 **Format Conversion**: Convert .tr0 to SPICE3/ngspice compatible .raw format
+- 📊 **NumPy Integration**: Direct NumPy array output for seamless data analysis
+- 🖥️ **Cross-Platform**: Supports Linux and macOS
 
 ## Requirements
 
-- Python >= 3.8
+- Python >= 3.10
 - NumPy
 - Rust toolchain (for building from source)
 
@@ -30,8 +35,8 @@ Based on the original PyOPUS implementation by Janez Puhan, rewritten in Rust wi
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd tr0parser
+git clone https://github.com/HaiwenZhang/hspice_tr0_parser.git
+cd hspice_tr0_parser
 
 # Create virtual environment
 python3 -m venv .venv
@@ -52,7 +57,7 @@ maturin develop --release
 maturin build --release
 
 # Install the wheel
-pip install target/wheels/tr0parser-*.whl
+pip install target/wheels/hspicetr0parser-*.whl
 ```
 
 ## Usage
@@ -129,7 +134,7 @@ plt.title(f'HSPICE Simulation - {len(signals)} signals, {len(time)} points')
 plt.show()
 
 # Convert to SPICE3 raw format for use with other tools
-hspice_tr0_to_raw('example/PinToPinSim.tr0', 'output.raw')
+hspice_tr0_to_raw('example/PinToPinSim.tr0', 'example/output.raw')
 ```
 
 ## Return Format
@@ -149,10 +154,12 @@ The `hspice_tr0_read()` function returns a nested structure:
 ]
 ```
 
-- **sweep_name**: Name of swept parameter (or `None` if no sweep)
-- **sweep_values**: NumPy array of sweep values (or `None`)
-- **data_dict**: Dictionary with signal names as keys and NumPy arrays as values
-- **scale_name**: Name of the independent variable (usually "TIME")
+| Field          | Description                                                     |
+| -------------- | --------------------------------------------------------------- |
+| `sweep_name`   | Name of swept parameter (or `None` if no sweep)                 |
+| `sweep_values` | NumPy array of sweep values (or `None`)                         |
+| `data_dict`    | Dictionary with signal names as keys and NumPy arrays as values |
+| `scale_name`   | Name of the independent variable (usually "TIME")               |
 
 ## SPICE3 Raw Output Format
 
@@ -177,10 +184,9 @@ Binary:
 ## Project Structure
 
 ```
-tr0parser/
+hspice_tr0_parser/
 ├── Cargo.toml              # Rust package configuration
 ├── pyproject.toml          # Python package configuration
-├── README.md               # This file
 ├── hspice_tr0_parser.py    # Python wrapper module
 ├── src/
 │   ├── lib.rs              # Module entry + PyO3 bindings
@@ -188,19 +194,69 @@ tr0parser/
 │   ├── reader.rs           # Memory-mapped file reader
 │   ├── parser.rs           # HSPICE binary parser
 │   └── writer.rs           # SPICE3 raw file writer
-└── example/
-    └── PinToPinSim.tr0     # Example test file
+├── tests/
+│   ├── conftest.py         # Pytest fixtures
+│   └── test_tr0_parser.py  # Python test suite
+├── example/
+│   └── PinToPinSim.tr0     # Example test file
+└── docs/
+```
+
+## Testing
+
+Run the test suite using pytest:
+
+```bash
+# Install development dependencies
+pip install pytest
+
+# Run all tests
+pytest tests/ -v
+
+# Run specific test class
+pytest tests/test_tr0_parser.py::TestHspiceTr0Read -v
+
+# Run with coverage (optional)
+pip install pytest-cov
+pytest tests/ -v --cov=hspice_tr0_parser
 ```
 
 ## Performance
 
 Optimized for large files using:
 
-- Memory-mapped file I/O (`memmap2`)
-- Bulk byte-to-float conversion
-- Single-pass data reading
-- Pre-allocated buffers
+| Optimization          | Description                                          |
+| --------------------- | ---------------------------------------------------- |
+| Memory-mapped I/O     | Uses `memmap2` crate for efficient file access       |
+| Parallel Processing   | Leverages `rayon` for multi-threaded data conversion |
+| Bulk Conversion       | Single-pass byte-to-float conversion                 |
+| Pre-allocated Buffers | Minimizes memory allocations during parsing          |
+
+## Dependencies
+
+### Rust Dependencies
+
+| Crate       | Version | Purpose             |
+| ----------- | ------- | ------------------- |
+| `pyo3`      | 0.27.2  | Python bindings     |
+| `numpy`     | 0.27.1  | NumPy array support |
+| `byteorder` | 1.5.0   | Byte order handling |
+| `memmap2`   | 0.9.9   | Memory-mapped files |
+| `rayon`     | 1.11.0  | Parallel processing |
+
+### Python Dependencies
+
+- `numpy` - Required runtime dependency
 
 ## License
 
-MIT
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Author
+
+Haiwen Zhang
+
+## Acknowledgments
+
+- Original C Version implementation by Janez Puhan
+- PyO3 team for excellent Python-Rust bindings
