@@ -10,21 +10,34 @@ Read and convert HSPICE binary output files (.tr0) from Python.
 
 This package provides high-performance functions to:
 
-- **Read** HSPICE binary output files (.tr0) and return data as NumPy arrays
-- **Convert** HSPICE .tr0 files to SPICE3 binary raw format (.raw)
+- **Read** HSPICE binary output files (.tr0, .ac0, .sw0) and return data as NumPy arrays
+- **Convert** HSPICE files to SPICE3 binary raw format (.raw)
+
+## Supported Formats
+
+| Format | Version   | Precision | Description                   |
+| ------ | --------- | --------- | ----------------------------- |
+| 9601   | 9007/9601 | float32   | Standard HSPICE binary format |
+| 2001   | 2001      | float64   | Double precision format       |
+
+| Extension | Analysis Type              |
+| --------- | -------------------------- |
+| `.tr0`    | Transient analysis         |
+| `.ac0`    | AC analysis (complex data) |
+| `.sw0`    | DC sweep analysis          |
 
 ## Features
 
-- 🚀 **High Performance**: Memory-mapped I/O, parallel processing with Rayon, and bulk data conversion
+- 🚀 **High Performance**: Memory-mapped I/O and bulk data conversion
 - 📦 **Minimal Dependencies**: Pure Rust implementation with PyO3 bindings
-- 🔄 **Format Conversion**: Convert .tr0 to SPICE3/ngspice compatible .raw format
+- 🔄 **Format Conversion**: Convert to SPICE3/ngspice compatible .raw format
 - 📊 **NumPy Integration**: Direct NumPy array output for seamless data analysis
-- 🖥️ **Cross-Platform**: Supports Linux and macOS
+- 🖥️ **Cross-Platform**: Supports Linux, macOS, Windows
 
 ## Requirements
 
 - Python >= 3.10
-- NumPy
+- NumPy >= 2.0
 - Rust toolchain (for building from source)
 
 ## Installation
@@ -189,14 +202,21 @@ hspice_tr0_parser/
 ├── src/
 │   ├── lib.rs              # Module entry + PyO3 bindings
 │   ├── types.rs            # Types, constants, error definitions
-│   ├── reader.rs           # Memory-mapped file reader
-│   ├── parser.rs           # HSPICE binary parser
+│   ├── reader.rs           # Memory-mapped file reader (generic bulk read)
+│   ├── parser.rs           # HSPICE binary parser (header/data processing)
 │   └── writer.rs           # SPICE3 raw file writer
 ├── tests/
-│   ├── conftest.py         # Pytest fixtures
-│   └── test_tr0_parser.py  # Python test suite
+│   ├── conftest.py         # Pytest fixtures and reference data
+│   ├── test_read.py        # Basic reading tests
+│   ├── test_convert.py     # Format conversion tests
+│   ├── test_formats.py     # Multi-format (9601/2001) tests
+│   └── test_reference.py   # Reference data comparison tests
 ├── example/
-│   └── PinToPinSim.tr0     # Example test file
+│   ├── PinToPinSim.tr0     # Large transient example (~3MB)
+│   ├── test_9601.tr0       # 9601 format transient
+│   ├── test_2001.tr0       # 2001 format transient (double precision)
+│   ├── test_9601.ac0       # AC analysis example
+│   └── test_9601.sw0       # DC sweep example
 └── docs/
 ```
 
@@ -208,11 +228,17 @@ Run the test suite using pytest:
 # Install development dependencies
 pip install pytest
 
-# Run all tests
+# Run all tests (66 tests)
 pytest tests/ -v
 
+# Run specific test file
+pytest tests/test_read.py -v          # Basic reading tests
+pytest tests/test_convert.py -v       # Format conversion tests
+pytest tests/test_formats.py -v       # Multi-format (9601/2001) tests
+pytest tests/test_reference.py -v     # Reference data comparison
+
 # Run specific test class
-pytest tests/test_tr0_parser.py::TestHspiceTr0Read -v
+pytest tests/test_read.py::TestBasicReading -v
 
 # Run with coverage (optional)
 pip install pytest-cov
@@ -223,12 +249,12 @@ pytest tests/ -v --cov=hspice_tr0_parser
 
 Optimized for large files using:
 
-| Optimization          | Description                                          |
-| --------------------- | ---------------------------------------------------- |
-| Memory-mapped I/O     | Uses `memmap2` crate for efficient file access       |
-| Parallel Processing   | Leverages `rayon` for multi-threaded data conversion |
-| Bulk Conversion       | Single-pass byte-to-float conversion                 |
-| Pre-allocated Buffers | Minimizes memory allocations during parsing          |
+| Optimization          | Description                                            |
+| --------------------- | ------------------------------------------------------ |
+| Memory-mapped I/O     | Uses `memmap2` crate for efficient file access         |
+| Generic Bulk Read     | Unified `NumericValue` trait for f32/f64 conversion    |
+| Pre-allocated Buffers | Minimizes memory allocations during parsing            |
+| Modular Design        | Split functions for header parsing and data processing |
 
 ## Dependencies
 
