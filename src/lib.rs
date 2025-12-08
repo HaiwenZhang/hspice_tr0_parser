@@ -34,6 +34,7 @@
 //!
 //! When built with the `python` feature (default), provides Python bindings.
 
+pub mod ffi;
 mod parser;
 mod reader;
 pub mod types;

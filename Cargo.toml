@@ -11,7 +11,7 @@ categories = ["parser-implementations", "science"]
 
 [lib]
 name = "hspicetr0parser"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [features]
 default = ["python"]
