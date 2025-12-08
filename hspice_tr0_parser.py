@@ -3,7 +3,7 @@
 Rust implementation with PyO3 by Haiwen Zhang
 """
 
-import _hspcie_tr0_parser
+import hspicetr0parser as _hspicetr0parser
 
 __all__ = ['hspice_tr0_read', 'hspice_tr0_to_raw']
 
@@ -44,9 +44,9 @@ def hspice_tr0_read(filename, data_type='numpy', debug=0):
 		>>> time = result[0][0][2][0]['TIME']  # list
 	"""
 	if data_type == 'numpy':
-		return _hspcie_tr0_parser.tr0_read_numpy(filename, debug)
+		return _hspicetr0parser.tr0_read_numpy(filename, debug)
 	elif data_type == 'list':
-		return _hspcie_tr0_parser.tr0_read_native(filename, debug)
+		return _hspicetr0parser.tr0_read_native(filename, debug)
 	else:
 		raise ValueError(f"data_type must be 'numpy' or 'list', got '{data_type}'")
 
@@ -67,4 +67,4 @@ def hspice_tr0_to_raw(input_path, output_path, debug=0):
 		>>> hspice_tr0_to_raw('simulation.tr0', 'simulation.raw')
 		True
 	"""
-	return _hspcie_tr0_parser.tr0_to_raw(input_path, output_path, debug)
+	return _hspicetr0parser.tr0_to_raw(input_path, output_path, debug)

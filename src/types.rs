@@ -1,8 +1,10 @@
 //! Common types, errors, and constants for HSPICE file operations
 
-use numpy::Complex64;
-use pyo3::prelude::*;
+use num_complex::Complex64;
 use std::collections::HashMap;
+
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
 
 // ============================================================================
 // Constants
@@ -80,8 +82,9 @@ impl From<std::io::Error> for HspiceError {
     }
 }
 
-impl From<HspiceError> for PyErr {
-    fn from(e: HspiceError) -> PyErr {
+#[cfg(feature = "python")]
+impl From<HspiceError> for pyo3::PyErr {
+    fn from(e: HspiceError) -> pyo3::PyErr {
         match e {
             HspiceError::IoError(e) => pyo3::exceptions::PyIOError::new_err(e.to_string()),
             HspiceError::ParseError(s) => pyo3::exceptions::PyValueError::new_err(s),

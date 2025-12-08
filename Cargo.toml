@@ -4,14 +4,23 @@ version = "1.0.0"
 edition = "2021"
 description = "Read HSPICE binary files"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/HaiwenZhang/hspice_tr0_parser"
+keywords = ["hspice", "tr0", "parser", "spice", "simulation"]
+categories = ["parser-implementations", "science"]
 
 [lib]
-name = "_hspcie_tr0_parser"
-crate-type = ["cdylib"]
+name = "hspicetr0parser"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["python"]
+python = ["pyo3", "numpy"]
 
 [dependencies]
-pyo3 = { version = "0.27.2", features = ["extension-module", "abi3-py310"] }
-numpy = "0.27.1"
+pyo3 = { version = "0.27.2", features = ["extension-module", "abi3-py310"], optional = true }
+numpy = { version = "0.27.1", optional = true }
 byteorder = "1.5.0"
 memmap2 = "0.9.9"
-rayon = "1.11.0"
+num-complex = "0.4"
+

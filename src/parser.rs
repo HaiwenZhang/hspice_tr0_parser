@@ -3,7 +3,7 @@
 use crate::reader::MmapReader;
 use crate::types::*;
 use memmap2::Mmap;
-use numpy::Complex64;
+use num_complex::Complex64;
 use std::collections::HashMap;
 use std::fs::File;
 

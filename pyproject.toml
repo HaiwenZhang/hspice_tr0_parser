@@ -13,6 +13,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",
 ]
@@ -22,6 +23,7 @@ dependencies = ["numpy>=2.0"]
 dev = ["maturin", "pytest"]
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["python"]
 python-source = "."
-module-name = "_hspcie_tr0_parser"
+module-name = "hspicetr0parser"
+
