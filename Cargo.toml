@@ -1,6 +1,6 @@
 [package]
 name = "hspicetr0parser"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Read HSPICE binary files"
 license = "MIT"
