@@ -5,43 +5,50 @@ Rust implementation with PyO3 by Haiwen Zhang
 
 import _hspcie_tr0_parser
 
-__all__ = [ 'hspice_tr0_read', 'hspice_tr0_to_raw' ]
+__all__ = ['hspice_tr0_read', 'hspice_tr0_to_raw']
 
-def hspice_tr0_read(filename, debug=0):
+def hspice_tr0_read(filename, data_type='numpy', debug=0):
 	"""
-	Returns a list with only one tuple as member (representing the results of 
-	one analysis). 
+	Read HSPICE binary file and return simulation data.
 	
-	The tuple has the following members
+	Args:
+		filename: Path to the HSPICE binary file (.tr0, .ac0, .sw0)
+		data_type: Return data type, either 'numpy' (default) or 'list'
+		           - 'numpy': Returns NumPy arrays (requires numpy)
+		           - 'list': Returns Python native lists (no numpy dependency)
+		debug: Debug level (0=quiet, 1=info, 2=verbose)
 	
-	0. Simulation results tuple with following members
-	  
-	  If a variable was swept and the analysis repeated for every value in the 
-	  sweep
-	    
-		0. The name of the swept parameter
-		1. An array with the N values of the parameter
-		2. A list with N dictionaries, one for every parameter value holding 
-		   the simulation results where result name is the key and values are 
-		   arrays. 
-	  
-	  If no variable was swept and the analysis was performed only once
-	    
-		0. ``None``
-		1. ``None``
-		2. A list with one dictionay as the only memebr. The dictionary holds 
-		   the simulation results. The name of a result is the key while values 
-		   are arrays. 
-		   
-	1. The name of the default scale array 
-	2. ``None`` (would be the dictionary of non-default scale vector names)
-	3. Title string
-	4. Date string
-	5. ``None`` (would be the plot name string)
+	Returns:
+		A list with one tuple containing:
+		
+		0. Simulation results tuple:
+		   - If swept: (sweep_name, sweep_values, [data_dicts])
+		   - If not swept: (None, None, [data_dict])
+		1. Scale name (e.g., "TIME")
+		2. None (placeholder)
+		3. Title string
+		4. Date string
+		5. None (placeholder)
+		
+		Returns None if an error occurs.
 	
-	Returns ``None`` if an error occurs during reading. 
+	Example:
+		>>> from hspice_tr0_parser import hspice_tr0_read
+		>>> # NumPy arrays (default)
+		>>> result = hspice_tr0_read('simulation.tr0')
+		>>> data = result[0][0][2][0]
+		>>> time = data['TIME']  # numpy.ndarray
+		>>> 
+		>>> # Python lists (no numpy dependency)
+		>>> result = hspice_tr0_read('simulation.tr0', data_type='list')
+		>>> time = result[0][0][2][0]['TIME']  # list
 	"""
-	return _hspcie_tr0_parser.tr0_read(filename, debug)
+	if data_type == 'numpy':
+		return _hspcie_tr0_parser.tr0_read_numpy(filename, debug)
+	elif data_type == 'list':
+		return _hspcie_tr0_parser.tr0_read_native(filename, debug)
+	else:
+		raise ValueError(f"data_type must be 'numpy' or 'list', got '{data_type}'")
 
 def hspice_tr0_to_raw(input_path, output_path, debug=0):
 	"""
@@ -56,7 +63,7 @@ def hspice_tr0_to_raw(input_path, output_path, debug=0):
 		True if conversion succeeded, False otherwise.
 	
 	Example:
-		>>> from tr0parser import hspice_tr0_to_raw
+		>>> from hspice_tr0_parser import hspice_tr0_to_raw
 		>>> hspice_tr0_to_raw('simulation.tr0', 'simulation.raw')
 		True
 	"""

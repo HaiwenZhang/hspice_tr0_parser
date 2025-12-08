@@ -78,8 +78,11 @@ pip install target/wheels/hspicetr0parser-*.whl
 ```python
 from hspice_tr0_parser import hspice_tr0_read
 
-# Read a .tr0 file
+# Read a .tr0 file (returns NumPy arrays by default)
 result = hspice_tr0_read('simulation.tr0')
+
+# Return Python lists instead of NumPy arrays (no numpy dependency)
+result = hspice_tr0_read('simulation.tr0', data_type='list')
 
 # With debug output
 result = hspice_tr0_read('simulation.tr0', debug=1)
@@ -94,7 +97,7 @@ data = result[0][0][2][0]  # First sweep's data dictionary
 
 # Iterate over all signals
 for name, values in data.items():
-    print(f"{name}: {len(values)} points, range [{values.min():.3e}, {values.max():.3e}]")
+    print(f"{name}: {len(values)} points")
 
 # Get specific signal
 time = data['TIME']
