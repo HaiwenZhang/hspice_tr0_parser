@@ -2,6 +2,41 @@
 
 use crate::types::{Endian, HspiceError, Result};
 
+/// Trait for numeric types that can be read from bytes
+pub trait NumericValue: Sized + Copy {
+    const SIZE: usize;
+    fn from_le_bytes(bytes: &[u8]) -> Self;
+    fn from_be_bytes(bytes: &[u8]) -> Self;
+}
+
+impl NumericValue for f32 {
+    const SIZE: usize = 4;
+    #[inline]
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+    #[inline]
+    fn from_be_bytes(bytes: &[u8]) -> Self {
+        f32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+}
+
+impl NumericValue for f64 {
+    const SIZE: usize = 8;
+    #[inline]
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        f64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ])
+    }
+    #[inline]
+    fn from_be_bytes(bytes: &[u8]) -> Self {
+        f64::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ])
+    }
+}
+
 /// Memory-mapped file reader for efficient large file parsing
 pub struct MmapReader<'a> {
     data: &'a [u8],
@@ -154,117 +189,50 @@ impl<'a> MmapReader<'a> {
         Ok(())
     }
 
-    /// Bulk read floats from a block - optimized for large data
+    /// Generic bulk read for numeric values - unified implementation for f32/f64
     #[inline]
-    pub fn read_floats_bulk(&mut self, count: usize) -> Result<Vec<f32>> {
-        let byte_count = count * 4;
+    pub fn read_values_bulk<T: NumericValue>(&mut self, count: usize) -> Result<Vec<T>> {
+        let byte_count = count * T::SIZE;
         let bytes = self.read_bytes(byte_count)?;
 
         let mut result = Vec::with_capacity(count);
+        let chunk_size = T::SIZE * 2; // Process 2 values at a time
 
-        match self.endian.unwrap_or(Endian::Little) {
-            Endian::Little => {
-                // Process 4 floats at a time for better cache utilization
-                let chunks = bytes.chunks_exact(16);
-                let remainder = chunks.remainder();
+        let is_little = matches!(self.endian.unwrap_or(Endian::Little), Endian::Little);
+        let chunks = bytes.chunks_exact(chunk_size);
+        let remainder = chunks.remainder();
 
-                for chunk in chunks {
-                    result.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                    result.push(f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]));
-                    result.push(f32::from_le_bytes([
-                        chunk[8], chunk[9], chunk[10], chunk[11],
-                    ]));
-                    result.push(f32::from_le_bytes([
-                        chunk[12], chunk[13], chunk[14], chunk[15],
-                    ]));
-                }
-
-                // Handle remaining bytes
-                for chunk in remainder.chunks_exact(4) {
-                    result.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                }
+        for chunk in chunks {
+            if is_little {
+                result.push(T::from_le_bytes(&chunk[..T::SIZE]));
+                result.push(T::from_le_bytes(&chunk[T::SIZE..]));
+            } else {
+                result.push(T::from_be_bytes(&chunk[..T::SIZE]));
+                result.push(T::from_be_bytes(&chunk[T::SIZE..]));
             }
-            Endian::Big => {
-                let chunks = bytes.chunks_exact(16);
-                let remainder = chunks.remainder();
+        }
 
-                for chunk in chunks {
-                    result.push(f32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                    result.push(f32::from_be_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]));
-                    result.push(f32::from_be_bytes([
-                        chunk[8], chunk[9], chunk[10], chunk[11],
-                    ]));
-                    result.push(f32::from_be_bytes([
-                        chunk[12], chunk[13], chunk[14], chunk[15],
-                    ]));
-                }
-
-                for chunk in remainder.chunks_exact(4) {
-                    result.push(f32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                }
+        // Handle remaining bytes
+        for chunk in remainder.chunks_exact(T::SIZE) {
+            if is_little {
+                result.push(T::from_le_bytes(chunk));
+            } else {
+                result.push(T::from_be_bytes(chunk));
             }
         }
 
         Ok(result)
     }
 
-    /// Bulk read doubles from a block - for 2001 format (8-byte double precision)
+    /// Bulk read floats from a block - convenience wrapper
+    #[inline]
+    pub fn read_floats_bulk(&mut self, count: usize) -> Result<Vec<f32>> {
+        self.read_values_bulk::<f32>(count)
+    }
+
+    /// Bulk read doubles from a block - convenience wrapper
     #[inline]
     pub fn read_doubles_bulk(&mut self, count: usize) -> Result<Vec<f64>> {
-        let byte_count = count * 8;
-        let bytes = self.read_bytes(byte_count)?;
-
-        let mut result = Vec::with_capacity(count);
-
-        match self.endian.unwrap_or(Endian::Little) {
-            Endian::Little => {
-                // Process 2 doubles at a time for better cache utilization
-                let chunks = bytes.chunks_exact(16);
-                let remainder = chunks.remainder();
-
-                for chunk in chunks {
-                    result.push(f64::from_le_bytes([
-                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
-                        chunk[7],
-                    ]));
-                    result.push(f64::from_le_bytes([
-                        chunk[8], chunk[9], chunk[10], chunk[11], chunk[12], chunk[13], chunk[14],
-                        chunk[15],
-                    ]));
-                }
-
-                // Handle remaining bytes
-                for chunk in remainder.chunks_exact(8) {
-                    result.push(f64::from_le_bytes([
-                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
-                        chunk[7],
-                    ]));
-                }
-            }
-            Endian::Big => {
-                let chunks = bytes.chunks_exact(16);
-                let remainder = chunks.remainder();
-
-                for chunk in chunks {
-                    result.push(f64::from_be_bytes([
-                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
-                        chunk[7],
-                    ]));
-                    result.push(f64::from_be_bytes([
-                        chunk[8], chunk[9], chunk[10], chunk[11], chunk[12], chunk[13], chunk[14],
-                        chunk[15],
-                    ]));
-                }
-
-                for chunk in remainder.chunks_exact(8) {
-                    result.push(f64::from_be_bytes([
-                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
-                        chunk[7],
-                    ]));
-                }
-            }
-        }
-
-        Ok(result)
+        self.read_values_bulk::<f64>(count)
     }
 }

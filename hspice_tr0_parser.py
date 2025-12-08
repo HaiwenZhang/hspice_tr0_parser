@@ -4,8 +4,6 @@ Rust implementation with PyO3 by Haiwen Zhang
 """
 
 import _hspcie_tr0_parser
-from numpy import array
-from time import strftime
 
 __all__ = [ 'hspice_tr0_read', 'hspice_tr0_to_raw' ]
 

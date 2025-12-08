@@ -36,97 +36,70 @@ fn read_header_blocks(reader: &mut MmapReader) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
-/// Read data blocks for 9601 format (float32) - optimized single-pass with bulk reading
-fn read_data_blocks_f32(reader: &mut MmapReader, debug: bool) -> Result<Vec<f64>> {
-    // Estimate capacity based on remaining file size
-    let estimated_floats = reader.remaining() / 5; // Rough estimate accounting for headers
-    let mut raw_data = Vec::with_capacity(estimated_floats);
-    let mut num_blocks = 0usize;
-
-    loop {
-        let (num_items, trailer) = reader.read_block_header(4)?;
-        num_blocks += 1;
-
-        // Bulk read all floats in this block
-        let block_floats = reader.read_floats_bulk(num_items)?;
-
-        // Check last value for end marker (9601 format: ~1e30)
-        let is_end = block_floats
-            .last()
-            .map(|&v| v >= END_MARKER_9601)
-            .unwrap_or(false);
-
-        // Convert f32 to f64 for unified processing
-        raw_data.extend(block_floats.into_iter().map(|v| v as f64));
-        reader.read_block_trailer(trailer)?;
-
-        if is_end {
-            break;
-        }
-    }
-
-    if debug {
-        eprintln!(
-            "Read {} data blocks (f32), {} total values (capacity: {})",
-            num_blocks,
-            raw_data.len(),
-            raw_data.capacity()
-        );
-    }
-
-    Ok(raw_data)
-}
-
-/// Read data blocks for 2001 format (float64/double) - optimized single-pass with bulk reading
-fn read_data_blocks_f64(reader: &mut MmapReader, debug: bool) -> Result<Vec<f64>> {
-    // Estimate capacity based on remaining file size
-    let estimated_doubles = reader.remaining() / 9; // Rough estimate accounting for headers
-    let mut raw_data = Vec::with_capacity(estimated_doubles);
-    let mut num_blocks = 0usize;
-
-    loop {
-        let (num_items, trailer) = reader.read_block_header(8)?;
-        num_blocks += 1;
-
-        // Bulk read all doubles in this block
-        let block_doubles = reader.read_doubles_bulk(num_items)?;
-
-        // Check last value for end marker (2001 format: 1e30)
-        let is_end = block_doubles
-            .last()
-            .map(|&v| v >= END_MARKER_2001)
-            .unwrap_or(false);
-
-        raw_data.extend(block_doubles);
-        reader.read_block_trailer(trailer)?;
-
-        if is_end {
-            break;
-        }
-    }
-
-    if debug {
-        eprintln!(
-            "Read {} data blocks (f64), {} total values (capacity: {})",
-            num_blocks,
-            raw_data.len(),
-            raw_data.capacity()
-        );
-    }
-
-    Ok(raw_data)
-}
-
-/// Read data blocks - dispatches to format-specific reader based on post version
+/// Read data blocks until end marker found - unified for all formats
 fn read_data_blocks(
     reader: &mut MmapReader,
     version: PostVersion,
     debug: bool,
 ) -> Result<Vec<f64>> {
-    match version {
-        PostVersion::V9601 => read_data_blocks_f32(reader, debug),
-        PostVersion::V2001 => read_data_blocks_f64(reader, debug),
+    // Determine item size and estimate capacity based on format
+    let (item_size, divisor) = match version {
+        PostVersion::V9601 => (4usize, 5), // 4-byte float, rough estimate
+        PostVersion::V2001 => (8usize, 9), // 8-byte double, rough estimate
+    };
+
+    let estimated_items = reader.remaining() / divisor;
+    let mut raw_data = Vec::with_capacity(estimated_items);
+    let mut num_blocks = 0usize;
+
+    loop {
+        let (num_items, trailer) = reader.read_block_header(item_size)?;
+        num_blocks += 1;
+
+        // Read and check for end marker based on format
+        let is_end = match version {
+            PostVersion::V9601 => {
+                let block_floats = reader.read_floats_bulk(num_items)?;
+                let end = block_floats
+                    .last()
+                    .map(|&v| v >= END_MARKER_9601)
+                    .unwrap_or(false);
+                raw_data.extend(block_floats.into_iter().map(|v| v as f64));
+                end
+            }
+            PostVersion::V2001 => {
+                let block_doubles = reader.read_doubles_bulk(num_items)?;
+                let end = block_doubles
+                    .last()
+                    .map(|&v| v >= END_MARKER_2001)
+                    .unwrap_or(false);
+                raw_data.extend(block_doubles);
+                end
+            }
+        };
+
+        reader.read_block_trailer(trailer)?;
+
+        if is_end {
+            break;
+        }
     }
+
+    if debug {
+        let format_name = match version {
+            PostVersion::V9601 => "f32",
+            PostVersion::V2001 => "f64",
+        };
+        eprintln!(
+            "Read {} data blocks ({}), {} total values (capacity: {})",
+            num_blocks,
+            format_name,
+            raw_data.len(),
+            raw_data.capacity()
+        );
+    }
+
+    Ok(raw_data)
 }
 
 /// Extract string from buffer at given range, trimmed
