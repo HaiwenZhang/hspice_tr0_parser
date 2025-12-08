@@ -36,8 +36,8 @@ fn read_header_blocks(reader: &mut MmapReader) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
-/// Read data blocks - optimized single-pass with bulk reading
-fn read_data_blocks_optimized(reader: &mut MmapReader, debug: bool) -> Result<Vec<f32>> {
+/// Read data blocks for 9601 format (float32) - optimized single-pass with bulk reading
+fn read_data_blocks_f32(reader: &mut MmapReader, debug: bool) -> Result<Vec<f64>> {
     // Estimate capacity based on remaining file size
     let estimated_floats = reader.remaining() / 5; // Rough estimate accounting for headers
     let mut raw_data = Vec::with_capacity(estimated_floats);
@@ -50,10 +50,14 @@ fn read_data_blocks_optimized(reader: &mut MmapReader, debug: bool) -> Result<Ve
         // Bulk read all floats in this block
         let block_floats = reader.read_floats_bulk(num_items)?;
 
-        // Check last value for end marker before extending
-        let is_end = block_floats.last().map(|&v| v > 9e29).unwrap_or(false);
+        // Check last value for end marker (9601 format: ~1e30)
+        let is_end = block_floats
+            .last()
+            .map(|&v| v >= END_MARKER_9601)
+            .unwrap_or(false);
 
-        raw_data.extend(block_floats);
+        // Convert f32 to f64 for unified processing
+        raw_data.extend(block_floats.into_iter().map(|v| v as f64));
         reader.read_block_trailer(trailer)?;
 
         if is_end {
@@ -63,7 +67,7 @@ fn read_data_blocks_optimized(reader: &mut MmapReader, debug: bool) -> Result<Ve
 
     if debug {
         eprintln!(
-            "Read {} data blocks, {} total floats (capacity: {})",
+            "Read {} data blocks (f32), {} total values (capacity: {})",
             num_blocks,
             raw_data.len(),
             raw_data.capacity()
@@ -71,6 +75,58 @@ fn read_data_blocks_optimized(reader: &mut MmapReader, debug: bool) -> Result<Ve
     }
 
     Ok(raw_data)
+}
+
+/// Read data blocks for 2001 format (float64/double) - optimized single-pass with bulk reading
+fn read_data_blocks_f64(reader: &mut MmapReader, debug: bool) -> Result<Vec<f64>> {
+    // Estimate capacity based on remaining file size
+    let estimated_doubles = reader.remaining() / 9; // Rough estimate accounting for headers
+    let mut raw_data = Vec::with_capacity(estimated_doubles);
+    let mut num_blocks = 0usize;
+
+    loop {
+        let (num_items, trailer) = reader.read_block_header(8)?;
+        num_blocks += 1;
+
+        // Bulk read all doubles in this block
+        let block_doubles = reader.read_doubles_bulk(num_items)?;
+
+        // Check last value for end marker (2001 format: 1e30)
+        let is_end = block_doubles
+            .last()
+            .map(|&v| v >= END_MARKER_2001)
+            .unwrap_or(false);
+
+        raw_data.extend(block_doubles);
+        reader.read_block_trailer(trailer)?;
+
+        if is_end {
+            break;
+        }
+    }
+
+    if debug {
+        eprintln!(
+            "Read {} data blocks (f64), {} total values (capacity: {})",
+            num_blocks,
+            raw_data.len(),
+            raw_data.capacity()
+        );
+    }
+
+    Ok(raw_data)
+}
+
+/// Read data blocks - dispatches to format-specific reader based on post version
+fn read_data_blocks(
+    reader: &mut MmapReader,
+    version: PostVersion,
+    debug: bool,
+) -> Result<Vec<f64>> {
+    match version {
+        PostVersion::V9601 => read_data_blocks_f32(reader, debug),
+        PostVersion::V2001 => read_data_blocks_f64(reader, debug),
+    }
 }
 
 /// Extract string from buffer at given range, trimmed
@@ -146,7 +202,7 @@ fn get_sweep_info(buf: &[u8], tokens: &[&str], num_vectors: usize) -> Option<(St
 
 /// Process raw data into column vectors
 fn process_raw_data(
-    raw_data: &[f32],
+    raw_data: &[f64],
     num_vectors: usize,
     num_variables: i32,
     var_type: i32,
@@ -162,11 +218,7 @@ fn process_raw_data(
     let data_offset = if has_sweep { 2 } else { 1 };
     let num_rows = (raw_data.len() - data_offset) / num_columns;
 
-    let sweep_value = if has_sweep {
-        Some(raw_data[0] as f64)
-    } else {
-        None
-    };
+    let sweep_value = if has_sweep { Some(raw_data[0]) } else { None };
 
     let data_start = if has_sweep { 1 } else { 0 };
 
@@ -184,13 +236,13 @@ fn process_raw_data(
     for _row in 0..num_rows {
         for col in 0..num_vectors {
             if var_type == COMPLEX_VAR && col > 0 && col < num_variables as usize {
-                let real = raw_data[data_pos] as f64;
+                let real = raw_data[data_pos];
                 data_pos += 1;
-                let imag = raw_data[data_pos] as f64;
+                let imag = raw_data[data_pos];
                 data_pos += 1;
                 complex_data[col - 1].push(Complex64::new(real, imag));
             } else {
-                column_data[col].push(raw_data[data_pos] as f64);
+                column_data[col].push(raw_data[data_pos]);
                 data_pos += 1;
             }
         }
@@ -274,6 +326,17 @@ pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<HspiceResult> {
 
     if post1 != POST_STRING11 && post1 != POST_STRING12 && post2 != POST_STRING21 {
         return Err(HspiceError::FormatError("Unknown post format".into()));
+    }
+
+    // Determine post version for data format selection
+    let post_version = if post2 == POST_STRING21 {
+        PostVersion::V2001 // 8-byte double precision
+    } else {
+        PostVersion::V9601 // 4-byte float
+    };
+
+    if debug > 0 {
+        eprintln!("Post version: {:?}", post_version);
     }
 
     // Extract metadata
@@ -368,7 +431,7 @@ pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<HspiceResult> {
             eprintln!("Reading sweep point {}/{}", sweep_idx + 1, sweep_size);
         }
 
-        let raw_data = read_data_blocks_optimized(&mut reader, debug > 1)?;
+        let raw_data = read_data_blocks(&mut reader, post_version, debug > 1)?;
 
         let (sweep_val, table) = process_raw_data(
             &raw_data,

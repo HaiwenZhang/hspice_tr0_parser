@@ -30,6 +30,11 @@ pub const FREQUENCY_TYPE: i32 = 2;
 pub const COMPLEX_VAR: i32 = 1;
 pub const REAL_VAR: i32 = 0;
 
+/// End-of-data marker for 9601 format (float32 representation of ~1e30)
+pub const END_MARKER_9601: f32 = 1.0000000150474662e+30_f32;
+/// End-of-data marker for 2001 format
+pub const END_MARKER_2001: f64 = 1.0e+30_f64;
+
 // ============================================================================
 // Enums
 // ============================================================================
@@ -39,6 +44,15 @@ pub const REAL_VAR: i32 = 0;
 pub enum Endian {
     Little,
     Big,
+}
+
+/// Post format version - determines data precision
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PostVersion {
+    /// 9007/9601 format: 4-byte float32
+    V9601,
+    /// 2001 format: 8-byte float64 (double precision)
+    V2001,
 }
 
 /// Vector data - either real or complex

@@ -207,4 +207,64 @@ impl<'a> MmapReader<'a> {
 
         Ok(result)
     }
+
+    /// Bulk read doubles from a block - for 2001 format (8-byte double precision)
+    #[inline]
+    pub fn read_doubles_bulk(&mut self, count: usize) -> Result<Vec<f64>> {
+        let byte_count = count * 8;
+        let bytes = self.read_bytes(byte_count)?;
+
+        let mut result = Vec::with_capacity(count);
+
+        match self.endian.unwrap_or(Endian::Little) {
+            Endian::Little => {
+                // Process 2 doubles at a time for better cache utilization
+                let chunks = bytes.chunks_exact(16);
+                let remainder = chunks.remainder();
+
+                for chunk in chunks {
+                    result.push(f64::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                        chunk[7],
+                    ]));
+                    result.push(f64::from_le_bytes([
+                        chunk[8], chunk[9], chunk[10], chunk[11], chunk[12], chunk[13], chunk[14],
+                        chunk[15],
+                    ]));
+                }
+
+                // Handle remaining bytes
+                for chunk in remainder.chunks_exact(8) {
+                    result.push(f64::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                        chunk[7],
+                    ]));
+                }
+            }
+            Endian::Big => {
+                let chunks = bytes.chunks_exact(16);
+                let remainder = chunks.remainder();
+
+                for chunk in chunks {
+                    result.push(f64::from_be_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                        chunk[7],
+                    ]));
+                    result.push(f64::from_be_bytes([
+                        chunk[8], chunk[9], chunk[10], chunk[11], chunk[12], chunk[13], chunk[14],
+                        chunk[15],
+                    ]));
+                }
+
+                for chunk in remainder.chunks_exact(8) {
+                    result.push(f64::from_be_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                        chunk[7],
+                    ]));
+                }
+            }
+        }
+
+        Ok(result)
+    }
 }

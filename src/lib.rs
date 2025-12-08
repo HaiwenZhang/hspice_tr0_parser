@@ -6,7 +6,6 @@
 //! - Bulk byte-to-float conversion
 //! - Single-pass reading with capacity estimation
 //!
-//! Based on the original C implementation by Janez Puhan (PyOPUS project).
 
 mod parser;
 mod reader;

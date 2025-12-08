@@ -13,8 +13,6 @@ This package provides high-performance functions to:
 - **Read** HSPICE binary output files (.tr0) and return data as NumPy arrays
 - **Convert** HSPICE .tr0 files to SPICE3 binary raw format (.raw)
 
-Based on the original PyOPUS implementation by Janez Puhan, rewritten in Rust with PyO3 bindings for better performance by Haiwen Zhang.
-
 ## Features
 
 - 🚀 **High Performance**: Memory-mapped I/O, parallel processing with Rayon, and bulk data conversion
@@ -252,11 +250,9 @@ Optimized for large files using:
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Author
+## Thanks
 
-Haiwen Zhang
-
-## Acknowledgments
-
-- Original C Version implementation by Janez Puhan
-- PyO3 team for excellent Python-Rust bindings
+- [hspicefile](https://pypi.org/project/hspicefile)
+- [PyOPUS](https://fides.fe.uni-lj.si/pyopus/)
+- [hspiceParser](https://github.com/HMC-ACE/hspiceParser)
+- Google Antigravity
