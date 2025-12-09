@@ -41,9 +41,12 @@ fn read_data_blocks(
     version: PostVersion,
     debug: bool,
 ) -> Result<Vec<f64>> {
+    // Item size and capacity estimation divisor per format:
+    // - item_size: bytes per data value (4 for f32, 8 for f64)
+    // - divisor: item_size + 1, accounts for ~20% block header/trailer overhead
     let (item_size, divisor) = match version {
-        PostVersion::V9601 => (4usize, 5),
-        PostVersion::V2001 => (8usize, 9),
+        PostVersion::V9601 => (4usize, 5), // 4-byte float + 1 for overhead
+        PostVersion::V2001 => (8usize, 9), // 8-byte double + 1 for overhead
     };
 
     let estimated_items = reader.remaining() / divisor;

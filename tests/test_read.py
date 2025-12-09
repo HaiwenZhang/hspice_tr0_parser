@@ -8,27 +8,13 @@ import pytest
 import numpy as np
 from pathlib import Path
 
-
-# Project paths
-PROJECT_ROOT = Path(__file__).parent.parent
-EXAMPLE_DIR = PROJECT_ROOT / "example"
-EXAMPLE_TR0 = EXAMPLE_DIR / "PinToPinSim.tr0"
-
-
-def read_hspice_file(filepath, debug=0):
-    """Unified HSPICE file reading interface"""
-    from hspice_tr0_parser import hspice_tr0_read
-    return hspice_tr0_read(str(filepath), debug=debug)
-
-
-def get_data_dict(result):
-    """Extract data dictionary from parse result"""
-    return result[0][0][2][0]
-
-
-def get_scale_name(result):
-    """Extract scale name from parse result"""
-    return result[0][1]
+from tests.conftest import (
+    read_hspice_file,
+    get_data_dict,
+    get_scale_name,
+    EXAMPLE_DIR,
+    EXAMPLE_TR0,
+)
 
 
 class TestModuleImport:

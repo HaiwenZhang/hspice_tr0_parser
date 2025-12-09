@@ -9,45 +9,14 @@ import pickle
 import numpy as np
 from pathlib import Path
 
-
-# Project paths
-PROJECT_ROOT = Path(__file__).parent.parent
-EXAMPLE_DIR = PROJECT_ROOT / "example"
-
-# Reference data files for validation
-REFERENCE_DATA_FILES = [
-    # (tr0_file, pickle_file, tolerance_rtol, tolerance_atol)
-    ("test_9601.tr0", "data_dict_9601.pickle", 1e-5, 1e-10),
-    ("test_2001.tr0", "data_dict_tr_2001.pickle", 1e-10, 1e-15),
-    ("test_9601.ac0", "data_dict_ac_9601.pickle", 1e-5, 1e-10),
-    ("test_9601.sw0", "data_dict_sw_9601.pickle", 1e-5, 1e-10),
-]
-
-
-def read_hspice_file(filepath, debug=0):
-    """Unified HSPICE file reading interface"""
-    from hspice_tr0_parser import hspice_tr0_read
-    return hspice_tr0_read(str(filepath), debug=debug)
-
-
-def get_data_dict(result):
-    """Extract data dictionary from parse result"""
-    return result[0][0][2][0]
-
-
-def load_reference_pickle(pickle_path):
-    """Load reference data from pickle file"""
-    with open(pickle_path, 'rb') as f:
-        return pickle.load(f)
-
-
-def get_time_key(data_dict):
-    """Get the TIME/HERTZ key from data dictionary"""
-    for key in ['TIME', 'time', 'HERTZ', 'hertz']:
-        if key in data_dict:
-            return key
-    # Return first key as fallback
-    return list(data_dict.keys())[0]
+from tests.conftest import (
+    read_hspice_file,
+    get_data_dict,
+    load_reference_pickle,
+    get_time_key,
+    EXAMPLE_DIR,
+    REFERENCE_DATA_FILES,
+)
 
 
 @pytest.fixture(params=REFERENCE_DATA_FILES, ids=[r[0] for r in REFERENCE_DATA_FILES])

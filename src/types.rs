@@ -4,7 +4,7 @@ use num_complex::Complex64;
 use std::collections::HashMap;
 
 #[cfg(feature = "python")]
-use pyo3::prelude::*;
+use pyo3;
 
 // ============================================================================
 // Constants

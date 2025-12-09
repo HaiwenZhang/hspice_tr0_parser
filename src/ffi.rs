@@ -18,9 +18,15 @@ use std::ptr;
 // ============================================================================
 
 /// Opaque handle to HspiceResult
+/// Includes cached CStrings for safe C string returns
 #[repr(C)]
 pub struct CHspiceResult {
     inner: Box<HspiceResult>,
+    // Cached CStrings for safe pointer returns to C
+    cached_title: CString,
+    cached_date: CString,
+    cached_scale_name: CString,
+    cached_sweep_name: Option<CString>,
 }
 
 /// Opaque handle to a data table (HashMap<String, VectorData>)
@@ -65,8 +71,21 @@ pub unsafe extern "C" fn hspice_read(filename: *const c_char, debug: c_int) -> *
 
     match hspice_read_impl(filename_cstr, debug) {
         Ok(result) => {
+            // Cache CStrings for safe pointer returns
+            let cached_title = CString::new(result.title.clone()).unwrap_or_default();
+            let cached_date = CString::new(result.date.clone()).unwrap_or_default();
+            let cached_scale_name = CString::new(result.scale_name.clone()).unwrap_or_default();
+            let cached_sweep_name = result
+                .sweep_name
+                .as_ref()
+                .and_then(|s| CString::new(s.clone()).ok());
+
             let boxed = Box::new(CHspiceResult {
                 inner: Box::new(result),
+                cached_title,
+                cached_date,
+                cached_scale_name,
+                cached_sweep_name,
             });
             Box::into_raw(boxed)
         }
@@ -104,7 +123,7 @@ pub unsafe extern "C" fn hspice_result_get_title(result: *const CHspiceResult) -
         return ptr::null();
     }
     let result = &*result;
-    result.inner.title.as_ptr() as *const c_char
+    result.cached_title.as_ptr()
 }
 
 /// Get the date string from the result.
@@ -114,7 +133,7 @@ pub unsafe extern "C" fn hspice_result_get_date(result: *const CHspiceResult) ->
         return ptr::null();
     }
     let result = &*result;
-    result.inner.date.as_ptr() as *const c_char
+    result.cached_date.as_ptr()
 }
 
 /// Get the scale name (e.g., "TIME") from the result.
@@ -126,7 +145,7 @@ pub unsafe extern "C" fn hspice_result_get_scale_name(
         return ptr::null();
     }
     let result = &*result;
-    result.inner.scale_name.as_ptr() as *const c_char
+    result.cached_scale_name.as_ptr()
 }
 
 /// Get the number of data tables (sweep points).
@@ -169,8 +188,8 @@ pub unsafe extern "C" fn hspice_result_get_sweep_name(
         return ptr::null();
     }
     let result = &*result;
-    match &result.inner.sweep_name {
-        Some(name) => name.as_ptr() as *const c_char,
+    match &result.cached_sweep_name {
+        Some(name) => name.as_ptr(),
         None => ptr::null(),
     }
 }

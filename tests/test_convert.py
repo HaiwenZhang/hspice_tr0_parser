@@ -10,28 +10,13 @@ import tempfile
 import numpy as np
 from pathlib import Path
 
-
-# Project paths
-PROJECT_ROOT = Path(__file__).parent.parent
-EXAMPLE_DIR = PROJECT_ROOT / "example"
-EXAMPLE_TR0 = EXAMPLE_DIR / "PinToPinSim.tr0"
-
-
-def read_hspice_file(filepath, debug=0):
-    """Unified HSPICE file reading interface"""
-    from hspice_tr0_parser import hspice_tr0_read
-    return hspice_tr0_read(str(filepath), debug=debug)
-
-
-def convert_to_raw(input_path, output_path, debug=0):
-    """Unified conversion interface"""
-    from hspice_tr0_parser import hspice_tr0_to_raw
-    return hspice_tr0_to_raw(str(input_path), str(output_path), debug=debug)
-
-
-def get_data_dict(result):
-    """Extract data dictionary from parse result"""
-    return result[0][0][2][0]
+from tests.conftest import (
+    read_hspice_file,
+    get_data_dict,
+    convert_to_raw,
+    EXAMPLE_DIR,
+    EXAMPLE_TR0,
+)
 
 
 @pytest.fixture
@@ -114,8 +99,7 @@ class TestMultiFormatConversion:
         ("PinToPinSim.tr0", "Transient Analysis"),
         ("test_9601.tr0", "Transient Analysis"),
         ("test_2001.tr0", "Transient Analysis"),
-        # Note: Current Rust writer outputs "DC Analysis" for AC files (known issue)
-        ("test_9601.ac0", "DC Analysis"),
+        ("test_9601.ac0", "AC Analysis"),  # Fixed: now correctly outputs AC Analysis
         ("test_9601.sw0", "DC Analysis"),
     ])
     def test_convert_format(self, input_file, expected_plotname, temp_raw_file):

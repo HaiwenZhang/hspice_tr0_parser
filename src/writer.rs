@@ -114,6 +114,11 @@ pub fn write_spice3_raw(result: &HspiceResult, output_path: &str, debug: i32) ->
     variable_names.sort(); // Consistent ordering
 
     // Collect signal data in order
+    // TODO: Performance optimization opportunity
+    // - Real data clone can be avoided using Cow<'_, [f64]> references
+    // - Complex data must be converted to magnitude, so clone is necessary
+    // - Current impact: ~2x memory for real signals during write
+    // - Priority: Low (only affects write operation, not parsing)
     let signal_data: Vec<Vec<f64>> = variable_names
         .iter()
         .map(|name| match table.get(name) {
@@ -136,14 +141,10 @@ pub fn write_spice3_raw(result: &HspiceResult, output_path: &str, debug: i32) ->
     let mut writer = BufWriter::new(file);
 
     // Determine plot name based on scale
-    let plot_name = if result.scale_name.to_uppercase() == "TIME" {
-        "Transient Analysis"
-    } else if result.scale_name.to_uppercase() == "FREQUENCY"
-        || result.scale_name.to_uppercase() == "FREQ"
-    {
-        "AC Analysis"
-    } else {
-        "DC Analysis"
+    let plot_name = match result.scale_name.to_uppercase().as_str() {
+        "TIME" => "Transient Analysis",
+        "FREQUENCY" | "FREQ" | "HERTZ" => "AC Analysis",
+        _ => "DC Analysis",
     };
 
     // Write header
