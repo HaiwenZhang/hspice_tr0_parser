@@ -58,7 +58,7 @@ pub enum PostVersion {
 }
 
 /// Vector data - either real or complex
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum VectorData {
     Real(Vec<f64>),
     Complex(Vec<Complex64>),

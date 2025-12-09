@@ -127,17 +127,18 @@ fn extract_int(buf: &[u8], start: usize, end: usize) -> i32 {
 // ============================================================================
 
 /// Parsed header metadata
-struct HeaderMetadata {
-    title: String,
-    date: String,
-    post_version: PostVersion,
-    num_variables: i32,
-    num_vectors: usize,
-    var_type: i32,
-    scale_name: String,
-    names: Vec<String>,
-    sweep_name: Option<String>,
-    sweep_size: i32,
+#[derive(Debug, Clone)]
+pub struct HeaderMetadata {
+    pub title: String,
+    pub date: String,
+    pub post_version: PostVersion,
+    pub num_variables: i32,
+    pub num_vectors: usize,
+    pub var_type: i32,
+    pub scale_name: String,
+    pub names: Vec<String>,
+    pub sweep_name: Option<String>,
+    pub sweep_size: i32,
 }
 
 /// Parse vector names from header buffer
@@ -379,6 +380,20 @@ fn validate_file_format(mmap: &Mmap) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Parse only the header, return metadata and data start position
+/// Used by streaming API to open file without loading all data
+pub fn parse_header_only(mmap: &Mmap) -> Result<(HeaderMetadata, usize)> {
+    validate_file_format(mmap)?;
+
+    let mut reader = MmapReader::new(mmap);
+    let header_buf = read_header_blocks(&mut reader)?;
+    let metadata = parse_header_metadata(&header_buf)?;
+
+    // Return current position as data start
+    let data_position = mmap.len() - reader.remaining();
+    Ok((metadata, data_position))
 }
 
 /// Main HSPICE file reader

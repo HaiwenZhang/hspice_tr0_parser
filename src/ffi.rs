@@ -453,3 +453,213 @@ pub unsafe extern "C" fn hspice_result_get_signal_complex(
         _ => -1,
     }
 }
+
+// ============================================================================
+// Streaming API for C
+// ============================================================================
+
+use crate::stream::{DataChunk, HspiceStreamReader};
+
+/// Opaque handle to streaming reader
+#[repr(C)]
+pub struct CHspiceStream {
+    reader: HspiceStreamReader,
+    current_chunk: Option<DataChunk>,
+    signal_names: Vec<CString>,
+    scale_name: CString,
+}
+
+/// Open a file for streaming read.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_open(
+    filename: *const c_char,
+    chunk_size: c_int,
+    debug: c_int,
+) -> *mut CHspiceStream {
+    if filename.is_null() || chunk_size <= 0 {
+        return ptr::null_mut();
+    }
+
+    let filename_str = match CStr::from_ptr(filename).to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    if debug > 0 {
+        eprintln!(
+            "hspice_stream_open: {} (chunk_size={})",
+            filename_str, chunk_size
+        );
+    }
+
+    let reader = match crate::stream::read_stream_chunked(filename_str, chunk_size as usize) {
+        Ok(r) => r,
+        Err(e) => {
+            if debug > 0 {
+                eprintln!("hspice_stream_open error: {:?}", e);
+            }
+            return ptr::null_mut();
+        }
+    };
+
+    let metadata = reader.metadata();
+    let signal_names: Vec<CString> = metadata
+        .signal_names
+        .iter()
+        .filter_map(|s| CString::new(s.clone()).ok())
+        .collect();
+    let scale_name = CString::new(metadata.scale_name.clone()).unwrap_or_default();
+
+    Box::into_raw(Box::new(CHspiceStream {
+        reader,
+        current_chunk: None,
+        signal_names,
+        scale_name,
+    }))
+}
+
+/// Close a streaming reader.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_close(stream: *mut CHspiceStream) {
+    if !stream.is_null() {
+        drop(Box::from_raw(stream));
+    }
+}
+
+/// Get the scale name.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_get_scale_name(
+    stream: *const CHspiceStream,
+) -> *const c_char {
+    if stream.is_null() {
+        return ptr::null();
+    }
+    (*stream).scale_name.as_ptr()
+}
+
+/// Get the number of signals.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_get_signal_count(stream: *const CHspiceStream) -> c_int {
+    if stream.is_null() {
+        return 0;
+    }
+    (*stream).signal_names.len() as c_int
+}
+
+/// Get a signal name by index.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_get_signal_name(
+    stream: *const CHspiceStream,
+    index: c_int,
+) -> *const c_char {
+    if stream.is_null() || index < 0 {
+        return ptr::null();
+    }
+    let stream_ref = &*stream;
+    let idx = index as usize;
+    if idx >= stream_ref.signal_names.len() {
+        return ptr::null();
+    }
+    stream_ref.signal_names[idx].as_ptr()
+}
+
+/// Read the next chunk. Returns 1 if success, 0 if EOF, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_next(stream: *mut CHspiceStream) -> c_int {
+    if stream.is_null() {
+        return -1;
+    }
+    let stream = &mut *stream;
+
+    match stream.reader.next() {
+        Some(Ok(chunk)) => {
+            stream.current_chunk = Some(chunk);
+            1
+        }
+        Some(Err(_)) => -1,
+        None => 0,
+    }
+}
+
+/// Get the current chunk's point count.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_get_chunk_size(stream: *const CHspiceStream) -> c_int {
+    if stream.is_null() {
+        return 0;
+    }
+    match &(*stream).current_chunk {
+        Some(chunk) => chunk
+            .data
+            .values()
+            .next()
+            .map(|v| match v {
+                VectorData::Real(d) => d.len() as c_int,
+                VectorData::Complex(d) => d.len() as c_int,
+            })
+            .unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Get the current chunk's time range start.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_get_time_start(stream: *const CHspiceStream) -> c_double {
+    if stream.is_null() {
+        return 0.0;
+    }
+    match &(*stream).current_chunk {
+        Some(chunk) => chunk.time_range.0,
+        None => 0.0,
+    }
+}
+
+/// Get the current chunk's time range end.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_get_time_end(stream: *const CHspiceStream) -> c_double {
+    if stream.is_null() {
+        return 0.0;
+    }
+    match &(*stream).current_chunk {
+        Some(chunk) => chunk.time_range.1,
+        None => 0.0,
+    }
+}
+
+/// Copy signal data from the current chunk into buffer.
+#[no_mangle]
+pub unsafe extern "C" fn hspice_stream_get_signal_data(
+    stream: *const CHspiceStream,
+    signal_name: *const c_char,
+    out_buffer: *mut c_double,
+    max_count: c_int,
+) -> c_int {
+    if stream.is_null() || signal_name.is_null() || out_buffer.is_null() || max_count <= 0 {
+        return -1;
+    }
+
+    let name = match CStr::from_ptr(signal_name).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let chunk = match &(*stream).current_chunk {
+        Some(c) => c,
+        None => return -1,
+    };
+
+    match chunk.data.get(name) {
+        Some(VectorData::Real(vec)) => {
+            let count = std::cmp::min(vec.len(), max_count as usize);
+            std::ptr::copy_nonoverlapping(vec.as_ptr(), out_buffer, count);
+            count as c_int
+        }
+        Some(VectorData::Complex(vec)) => {
+            let count = std::cmp::min(vec.len(), max_count as usize);
+            for (i, c) in vec.iter().take(count).enumerate() {
+                *out_buffer.add(i) = (c.re * c.re + c.im * c.im).sqrt();
+            }
+            count as c_int
+        }
+        None => -1,
+    }
+}

@@ -5,7 +5,7 @@ Rust implementation with PyO3 by Haiwen Zhang
 
 import hspicetr0parser as _hspicetr0parser
 
-__all__ = ['hspice_tr0_read', 'hspice_tr0_to_raw']
+__all__ = ['hspice_tr0_read', 'hspice_tr0_to_raw', 'hspice_tr0_stream']
 
 def hspice_tr0_read(filename, data_type='numpy', debug=0):
 	"""
@@ -68,3 +68,51 @@ def hspice_tr0_to_raw(input_path, output_path, debug=0):
 		True
 	"""
 	return _hspicetr0parser.tr0_to_raw(input_path, output_path, debug)
+
+def hspice_tr0_stream(filename, chunk_size=10000, signals=None, debug=0):
+	"""
+	Stream HSPICE binary file in chunks for memory-efficient processing.
+	
+	This function is designed for processing large files (1GB+) without
+	loading the entire file into memory. Data is returned as a generator
+	yielding chunks of data.
+	
+	Args:
+		filename: Path to the HSPICE binary file (.tr0, .ac0, .sw0)
+		chunk_size: Number of time points per chunk (default: 10000)
+		signals: Optional list of signal names to read (default: all signals)
+		         Filtering signals reduces memory usage further.
+		debug: Debug level (0=quiet, 1=info, 2=verbose)
+	
+	Yields:
+		dict: A dictionary for each chunk containing:
+			- 'chunk_index': int - Index of this chunk (0-based)
+			- 'time_range': tuple(float, float) - Start and end time
+			- 'data': dict - Signal data as numpy arrays
+	
+	Example:
+		>>> from hspice_tr0_parser import hspice_tr0_stream
+		>>> 
+		>>> # Process a large file in chunks
+		>>> for chunk in hspice_tr0_stream('huge_simulation.tr0'):
+		...     print(f"Chunk {chunk['chunk_index']}: {chunk['time_range']}")
+		...     time = chunk['data']['TIME']
+		...     vout = chunk['data']['vout']
+		...     # Process data...
+		>>> 
+		>>> # Read only specific signals to save memory
+		>>> for chunk in hspice_tr0_stream('huge.tr0', signals=['TIME', 'vout']):
+		...     print(len(chunk['data']))  # Only 2 signals
+		>>> 
+		>>> # Custom chunk size for memory control
+		>>> for chunk in hspice_tr0_stream('huge.tr0', chunk_size=5000):
+		...     pass  # Smaller chunks, less memory per iteration
+	
+	Memory Usage:
+		- Full read: ~2-3GB for 1GB file
+		- Stream (chunk_size=10000, 1000 signals): ~80MB per chunk
+		- Stream with 3 signals filter: ~240KB per chunk
+	"""
+	chunks = _hspicetr0parser.tr0_stream(filename, chunk_size, signals, debug)
+	for chunk in chunks:
+		yield chunk

@@ -37,11 +37,18 @@
 pub mod ffi;
 mod parser;
 mod reader;
+pub mod stream;
 pub mod types;
 mod writer;
 
 // Re-export core types for Rust API
 pub use types::{Endian, HspiceError, HspiceResult, PostVersion, Result, VectorData};
+
+// Re-export streaming API
+pub use stream::{
+    read_stream, read_stream_chunked, read_stream_signals, DataChunk, HspiceStreamReader,
+    StreamMetadata, DEFAULT_CHUNK_SIZE,
+};
 
 // ============================================================================
 // Rust Public API
@@ -260,11 +267,94 @@ mod python_bindings {
         }
     }
 
+    /// Streaming reader for large files
+    /// Returns a list of chunks, each containing a subset of the data
+    #[pyfunction]
+    #[pyo3(signature = (filename, chunk_size=10000, signals=None, debug=0))]
+    pub fn tr0_stream(
+        py: Python,
+        filename: &str,
+        chunk_size: usize,
+        signals: Option<Vec<String>>,
+        debug: i32,
+    ) -> PyResult<Py<PyList>> {
+        use crate::stream::{read_stream_chunked, read_stream_signals};
+
+        if debug > 0 {
+            eprintln!("Opening stream: {} (chunk_size={})", filename, chunk_size);
+        }
+
+        let reader = if let Some(ref sigs) = signals {
+            let sig_refs: Vec<&str> = sigs.iter().map(|s| s.as_str()).collect();
+            match read_stream_signals(filename, &sig_refs, chunk_size) {
+                Ok(r) => r,
+                Err(e) => {
+                    if debug > 0 {
+                        eprintln!("Stream open error: {:?}", e);
+                    }
+                    return Ok(PyList::empty(py).unbind());
+                }
+            }
+        } else {
+            match read_stream_chunked(filename, chunk_size) {
+                Ok(r) => r,
+                Err(e) => {
+                    if debug > 0 {
+                        eprintln!("Stream open error: {:?}", e);
+                    }
+                    return Ok(PyList::empty(py).unbind());
+                }
+            }
+        };
+
+        // Collect all chunks into a list
+        let chunks_list = PyList::empty(py);
+
+        for chunk_result in reader {
+            match chunk_result {
+                Ok(chunk) => {
+                    let chunk_dict = PyDict::new(py);
+                    chunk_dict.set_item("chunk_index", chunk.chunk_index)?;
+                    chunk_dict.set_item("time_range", (chunk.time_range.0, chunk.time_range.1))?;
+
+                    // Convert data to Python dict with numpy arrays
+                    let data_dict = PyDict::new(py);
+                    for (name, vector) in chunk.data {
+                        let arr = match vector {
+                            VectorData::Real(v) => Array1::from_vec(v).into_pyarray(py).into_any(),
+                            VectorData::Complex(v) => {
+                                // Convert complex to magnitude for numpy compatibility
+                                let mags: Vec<f64> = v
+                                    .iter()
+                                    .map(|c| (c.re * c.re + c.im * c.im).sqrt())
+                                    .collect();
+                                Array1::from_vec(mags).into_pyarray(py).into_any()
+                            }
+                        };
+                        data_dict.set_item(name, arr)?;
+                    }
+                    chunk_dict.set_item("data", data_dict)?;
+
+                    chunks_list.append(chunk_dict)?;
+                }
+                Err(e) => {
+                    if debug > 0 {
+                        eprintln!("Stream chunk error: {:?}", e);
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok(chunks_list.unbind())
+    }
+
     #[pymodule]
     pub fn hspicetr0parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(tr0_read_numpy, m)?)?;
         m.add_function(wrap_pyfunction!(tr0_read_native, m)?)?;
         m.add_function(wrap_pyfunction!(tr0_to_raw, m)?)?;
+        m.add_function(wrap_pyfunction!(tr0_stream, m)?)?;
         Ok(())
     }
 }
