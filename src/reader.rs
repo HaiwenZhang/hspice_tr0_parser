@@ -2,41 +2,6 @@
 
 use crate::types::{Endian, HspiceError, Result};
 
-/// Trait for numeric types that can be read from bytes
-pub trait NumericValue: Sized + Copy {
-    const SIZE: usize;
-    fn from_le_bytes(bytes: &[u8]) -> Self;
-    fn from_be_bytes(bytes: &[u8]) -> Self;
-}
-
-impl NumericValue for f32 {
-    const SIZE: usize = 4;
-    #[inline]
-    fn from_le_bytes(bytes: &[u8]) -> Self {
-        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-    }
-    #[inline]
-    fn from_be_bytes(bytes: &[u8]) -> Self {
-        f32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-    }
-}
-
-impl NumericValue for f64 {
-    const SIZE: usize = 8;
-    #[inline]
-    fn from_le_bytes(bytes: &[u8]) -> Self {
-        f64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
-    }
-    #[inline]
-    fn from_be_bytes(bytes: &[u8]) -> Self {
-        f64::from_be_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
-    }
-}
-
 /// Memory-mapped file reader for efficient large file parsing
 pub struct MmapReader<'a> {
     data: &'a [u8],
@@ -69,39 +34,6 @@ impl<'a> MmapReader<'a> {
         let bytes = &self.data[self.pos..self.pos + count];
         self.pos += count;
         Ok(bytes)
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub fn skip(&mut self, count: usize) -> Result<()> {
-        if self.pos + count > self.data.len() {
-            return Err(HspiceError::IoError(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Unexpected end of file",
-            )));
-        }
-        self.pos += count;
-        Ok(())
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub fn read_i32(&mut self) -> Result<i32> {
-        let bytes = self.read_bytes(4)?;
-        Ok(match self.endian.unwrap_or(Endian::Little) {
-            Endian::Little => i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            Endian::Big => i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        })
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub fn read_f32(&mut self) -> Result<f32> {
-        let bytes = self.read_bytes(4)?;
-        Ok(match self.endian.unwrap_or(Endian::Little) {
-            Endian::Little => f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            Endian::Big => f32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        })
     }
 
     /// Read and detect endianness from block header
@@ -189,50 +121,69 @@ impl<'a> MmapReader<'a> {
         Ok(())
     }
 
-    /// Generic bulk read for numeric values - unified implementation for f32/f64
+    /// Read f32 values and convert to f64, appending directly to target Vec
+    /// This avoids creating an intermediate Vec<f32>
     #[inline]
-    pub fn read_values_bulk<T: NumericValue>(&mut self, count: usize) -> Result<Vec<T>> {
-        let byte_count = count * T::SIZE;
+    pub fn read_floats_as_f64_into(&mut self, count: usize, target: &mut Vec<f64>) -> Result<()> {
+        let byte_count = count * 4; // f32 is 4 bytes
         let bytes = self.read_bytes(byte_count)?;
 
-        let mut result = Vec::with_capacity(count);
-        let chunk_size = T::SIZE * 2; // Process 2 values at a time
-
+        target.reserve(count);
         let is_little = matches!(self.endian.unwrap_or(Endian::Little), Endian::Little);
-        let chunks = bytes.chunks_exact(chunk_size);
+
+        // Process 2 values at a time for better pipelining
+        let chunks = bytes.chunks_exact(8);
         let remainder = chunks.remainder();
 
         for chunk in chunks {
             if is_little {
-                result.push(T::from_le_bytes(&chunk[..T::SIZE]));
-                result.push(T::from_le_bytes(&chunk[T::SIZE..]));
+                let v1 = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                let v2 = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+                target.push(v1 as f64);
+                target.push(v2 as f64);
             } else {
-                result.push(T::from_be_bytes(&chunk[..T::SIZE]));
-                result.push(T::from_be_bytes(&chunk[T::SIZE..]));
+                let v1 = f32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                let v2 = f32::from_be_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+                target.push(v1 as f64);
+                target.push(v2 as f64);
             }
         }
 
-        // Handle remaining bytes
-        for chunk in remainder.chunks_exact(T::SIZE) {
-            if is_little {
-                result.push(T::from_le_bytes(chunk));
+        // Handle remaining bytes (0 or 4 bytes)
+        if remainder.len() >= 4 {
+            let v = if is_little {
+                f32::from_le_bytes([remainder[0], remainder[1], remainder[2], remainder[3]])
             } else {
-                result.push(T::from_be_bytes(chunk));
-            }
+                f32::from_be_bytes([remainder[0], remainder[1], remainder[2], remainder[3]])
+            };
+            target.push(v as f64);
         }
 
-        Ok(result)
+        Ok(())
     }
 
-    /// Bulk read floats from a block - convenience wrapper
+    /// Read f64 values, appending directly to target Vec
     #[inline]
-    pub fn read_floats_bulk(&mut self, count: usize) -> Result<Vec<f32>> {
-        self.read_values_bulk::<f32>(count)
-    }
+    pub fn read_doubles_into(&mut self, count: usize, target: &mut Vec<f64>) -> Result<()> {
+        let byte_count = count * 8;
+        let bytes = self.read_bytes(byte_count)?;
 
-    /// Bulk read doubles from a block - convenience wrapper
-    #[inline]
-    pub fn read_doubles_bulk(&mut self, count: usize) -> Result<Vec<f64>> {
-        self.read_values_bulk::<f64>(count)
+        target.reserve(count);
+        let is_little = matches!(self.endian.unwrap_or(Endian::Little), Endian::Little);
+
+        for chunk in bytes.chunks_exact(8) {
+            let v = if is_little {
+                f64::from_le_bytes([
+                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+                ])
+            } else {
+                f64::from_be_bytes([
+                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+                ])
+            };
+            target.push(v);
+        }
+
+        Ok(())
     }
 }
