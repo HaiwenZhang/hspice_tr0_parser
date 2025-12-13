@@ -1,192 +1,186 @@
-//! WebAssembly bindings for HSPICE binary file parser
+//! WebAssembly bindings for waveform file parser
 //!
-//! This crate provides WASM bindings for parsing HSPICE binary files
-//! in browser and Node.js environments.
-//!
-//! # Usage
-//!
-//! ```javascript
-//! import init, { parseHspice } from '@haiwen/hspice-parser';
-//!
-//! await init();
-//! const bytes = new Uint8Array(await file.arrayBuffer());
-//! const result = parseHspice(bytes);
-//! console.log(result.title);
-//! ```
+//! Provides JavaScript-friendly API for parsing HSPICE binary files in the browser.
 
-use hspice_core::{self, VectorData};
+use hspice_core::{AnalysisType, VarType, VectorData, WaveformResult};
 use js_sys::{Array, Float64Array, Object, Reflect};
+use std::io::Write;
 use wasm_bindgen::prelude::*;
 
-/// Parse an HSPICE binary file from a Uint8Array
+// ============================================================================
+// JavaScript Result Types
+// ============================================================================
+
+/// Parse HSPICE binary data from a Uint8Array
 ///
 /// # Arguments
-/// * `data` - Binary content of the HSPICE file
+/// * `data` - Binary file content as Uint8Array
 ///
 /// # Returns
-/// A JavaScript object containing the parsed result
+/// JavaScript object with parsed waveform data
 #[wasm_bindgen(js_name = parseHspice)]
 pub fn parse_hspice(data: &[u8]) -> Result<JsValue, JsValue> {
     let result = parse_from_bytes(data)?;
     create_js_result(&result)
 }
 
-/// Internal struct to hold parsed data
-struct HspiceData {
-    title: String,
-    date: String,
-    scale_name: String,
-    sweep_name: Option<String>,
-    sweep_values: Option<Vec<f64>>,
-    tables: Vec<std::collections::HashMap<String, VectorData>>,
+/// Get all signal names from parsed result
+#[wasm_bindgen(js_name = getSignalNames)]
+pub fn get_signal_names(data: &[u8]) -> Result<Array, JsValue> {
+    let result = parse_from_bytes(data)?;
+
+    let names = Array::new();
+    for var in &result.variables {
+        names.push(&JsValue::from_str(&var.name));
+    }
+    Ok(names)
 }
 
-fn parse_from_bytes(data: &[u8]) -> Result<HspiceData, JsValue> {
-    use std::io::Write;
+/// Get signal data by name
+#[wasm_bindgen(js_name = getSignalData)]
+pub fn get_signal_data(data: &[u8], signal_name: &str) -> Result<JsValue, JsValue> {
+    let result = parse_from_bytes(data)?;
 
+    let idx = result
+        .var_index(signal_name)
+        .ok_or_else(|| JsValue::from_str(&format!("Signal not found: {}", signal_name)))?;
+
+    let table = result
+        .tables
+        .first()
+        .ok_or_else(|| JsValue::from_str("No data tables"))?;
+
+    vector_to_js(&table.vectors[idx])
+}
+
+// ============================================================================
+// Internal Helpers
+// ============================================================================
+
+fn parse_from_bytes(data: &[u8]) -> Result<WaveformResult, JsValue> {
+    // Create temp file for parsing (WASM can't access filesystem)
     let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("hspice_wasm_{}.tr0", js_sys::Math::random()));
-    let temp_path_str = temp_path.to_string_lossy().to_string();
+    let temp_path = temp_dir.join("hspice_wasm_temp.tr0");
 
-    // Write data to temp file
     let mut file = std::fs::File::create(&temp_path)
         .map_err(|e| JsValue::from_str(&format!("Failed to create temp file: {}", e)))?;
+
     file.write_all(data)
-        .map_err(|e| JsValue::from_str(&format!("Failed to write temp file: {}", e)))?;
+        .map_err(|e| JsValue::from_str(&format!("Failed to write data: {}", e)))?;
+
     drop(file);
 
-    // Parse the file
-    let result = hspice_core::read(&temp_path_str)
+    let temp_path_str = temp_path
+        .to_str()
+        .ok_or_else(|| JsValue::from_str("Invalid temp path"))?;
+
+    let result = hspice_core::read(temp_path_str)
         .map_err(|e| JsValue::from_str(&format!("Parse error: {:?}", e)))?;
 
-    // Clean up temp file
+    // Cleanup
     let _ = std::fs::remove_file(&temp_path);
 
-    Ok(HspiceData {
-        title: result.title,
-        date: result.date,
-        scale_name: result.scale_name,
-        sweep_name: result.sweep_name,
-        sweep_values: result.sweep_values,
-        tables: result.data_tables,
-    })
+    Ok(result)
 }
 
-fn create_js_result(data: &HspiceData) -> Result<JsValue, JsValue> {
+fn create_js_result(data: &WaveformResult) -> Result<JsValue, JsValue> {
     let result = Object::new();
 
-    // Set basic properties
+    // Metadata
     Reflect::set(&result, &"title".into(), &data.title.clone().into())?;
     Reflect::set(&result, &"date".into(), &data.date.clone().into())?;
-    Reflect::set(
-        &result,
-        &"scaleName".into(),
-        &data.scale_name.clone().into(),
-    )?;
-    Reflect::set(
-        &result,
-        &"tableCount".into(),
-        &(data.tables.len() as u32).into(),
-    )?;
+    Reflect::set(&result, &"scaleName".into(), &data.scale_name().into())?;
+
+    // Analysis type
+    let analysis = match data.analysis {
+        AnalysisType::Transient => "transient",
+        AnalysisType::AC => "ac",
+        AnalysisType::DC => "dc",
+        AnalysisType::Operating => "operating",
+        AnalysisType::Noise => "noise",
+        AnalysisType::Unknown => "unknown",
+    };
+    Reflect::set(&result, &"analysis".into(), &analysis.into())?;
+
+    // Variables
+    let variables = Array::new();
+    for var in &data.variables {
+        let var_obj = Object::new();
+        Reflect::set(&var_obj, &"name".into(), &var.name.clone().into())?;
+        let var_type = match var.var_type {
+            VarType::Time => "time",
+            VarType::Frequency => "frequency",
+            VarType::Voltage => "voltage",
+            VarType::Current => "current",
+            VarType::Unknown => "unknown",
+        };
+        Reflect::set(&var_obj, &"type".into(), &var_type.into())?;
+        variables.push(&var_obj);
+    }
+    Reflect::set(&result, &"variables".into(), &variables)?;
 
     // Sweep info
-    match &data.sweep_name {
-        Some(name) => Reflect::set(&result, &"sweepName".into(), &name.clone().into())?,
-        None => Reflect::set(&result, &"sweepName".into(), &JsValue::NULL)?,
+    match &data.sweep_param {
+        Some(name) => Reflect::set(&result, &"sweepParam".into(), &name.clone().into())?,
+        None => Reflect::set(&result, &"sweepParam".into(), &JsValue::NULL)?,
     };
 
-    match &data.sweep_values {
-        Some(values) => {
-            let arr = Float64Array::new_with_length(values.len() as u32);
-            for (i, &v) in values.iter().enumerate() {
-                arr.set_index(i as u32, v);
-            }
-            Reflect::set(&result, &"sweepValues".into(), &arr.into())?;
-        }
-        None => {
-            Reflect::set(&result, &"sweepValues".into(), &JsValue::NULL)?;
-        }
-    };
-
-    // Create tables array
+    // Tables
     let tables = Array::new();
     for table in &data.tables {
         let table_obj = Object::new();
 
-        // Get signal names
-        let names = Array::new();
-        for name in table.keys() {
-            names.push(&name.clone().into());
-        }
-        Reflect::set(&table_obj, &"signalNames".into(), &names)?;
+        // Sweep value
+        match table.sweep_value {
+            Some(v) => Reflect::set(&table_obj, &"sweepValue".into(), &v.into())?,
+            None => Reflect::set(&table_obj, &"sweepValue".into(), &JsValue::NULL)?,
+        };
 
-        // Create data object
-        let data_obj = Object::new();
-        for (name, vector) in table {
-            match vector {
-                VectorData::Real(values) => {
-                    let arr = Float64Array::new_with_length(values.len() as u32);
-                    for (i, &v) in values.iter().enumerate() {
-                        arr.set_index(i as u32, v);
-                    }
-                    Reflect::set(&data_obj, &name.clone().into(), &arr.into())?;
-                }
-                VectorData::Complex(values) => {
-                    // For complex, return magnitude
-                    let arr = Float64Array::new_with_length(values.len() as u32);
-                    for (i, c) in values.iter().enumerate() {
-                        let mag = (c.re * c.re + c.im * c.im).sqrt();
-                        arr.set_index(i as u32, mag);
-                    }
-                    Reflect::set(&data_obj, &name.clone().into(), &arr.into())?;
-                }
-            }
+        // Data as object {name: Float64Array}
+        let signals = Object::new();
+        for (var, vector) in data.variables.iter().zip(table.vectors.iter()) {
+            let js_array = vector_to_js(vector)?;
+            Reflect::set(&signals, &var.name.clone().into(), &js_array)?;
         }
-        Reflect::set(&table_obj, &"data".into(), &data_obj)?;
+        Reflect::set(&table_obj, &"signals".into(), &signals)?;
 
         tables.push(&table_obj);
     }
     Reflect::set(&result, &"tables".into(), &tables)?;
 
+    // Counts
+    Reflect::set(&result, &"numPoints".into(), &(data.len() as u32).into())?;
+    Reflect::set(&result, &"numVars".into(), &(data.num_vars() as u32).into())?;
+    Reflect::set(
+        &result,
+        &"numSweeps".into(),
+        &(data.num_sweeps() as u32).into(),
+    )?;
+
     Ok(result.into())
 }
 
-/// Get signal data from a parsed result
-#[wasm_bindgen(js_name = getSignalData)]
-pub fn get_signal_data(
-    result: &JsValue,
-    table_index: u32,
-    signal_name: &str,
-) -> Result<Float64Array, JsValue> {
-    let tables = Reflect::get(result, &"tables".into())?;
-    let table = Reflect::get(&tables, &table_index.into())?;
-    let data = Reflect::get(&table, &"data".into())?;
-    let signal = Reflect::get(&data, &signal_name.into())?;
-
-    if signal.is_undefined() {
-        return Err(JsValue::from_str(&format!(
-            "Signal '{}' not found",
-            signal_name
-        )));
+fn vector_to_js(vector: &VectorData) -> Result<JsValue, JsValue> {
+    match vector {
+        VectorData::Real(vec) => {
+            let array = Float64Array::new_with_length(vec.len() as u32);
+            for (i, &v) in vec.iter().enumerate() {
+                array.set_index(i as u32, v);
+            }
+            Ok(array.into())
+        }
+        VectorData::Complex(vec) => {
+            // Return magnitude for complex data
+            let array = Float64Array::new_with_length(vec.len() as u32);
+            for (i, c) in vec.iter().enumerate() {
+                array.set_index(i as u32, (c.re * c.re + c.im * c.im).sqrt());
+            }
+            Ok(array.into())
+        }
     }
-
-    Ok(Float64Array::from(signal))
-}
-
-/// Get all signal names from a table
-#[wasm_bindgen(js_name = getSignalNames)]
-pub fn get_signal_names(result: &JsValue, table_index: u32) -> Result<Array, JsValue> {
-    let tables = Reflect::get(result, &"tables".into())?;
-    let table = Reflect::get(&tables, &table_index.into())?;
-    let names = Reflect::get(&table, &"signalNames".into())?;
-
-    Ok(Array::from(&names))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use wasm_bindgen_test::*;
-
-    wasm_bindgen_test_configure!(run_in_browser);
+    // Tests require wasm-pack test, not regular cargo test
 }

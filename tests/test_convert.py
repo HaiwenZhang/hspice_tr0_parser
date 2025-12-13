@@ -1,7 +1,7 @@
 """
 Test suite for TR0 to SPICE3 raw format conversion.
 
-Tests the hspice_tr0_to_raw function for various input formats.
+Tests the convert_to_raw function for various input formats.
 """
 
 import pytest
@@ -11,7 +11,7 @@ import numpy as np
 from pathlib import Path
 
 from tests.conftest import (
-    read_hspice_file,
+    read_waveform,
     get_data_dict,
     convert_to_raw,
     EXAMPLE_DIR,
@@ -99,7 +99,7 @@ class TestMultiFormatConversion:
         ("PinToPinSim.tr0", "Transient Analysis"),
         ("test_9601.tr0", "Transient Analysis"),
         ("test_2001.tr0", "Transient Analysis"),
-        ("test_9601.ac0", "AC Analysis"),  # Fixed: now correctly outputs AC Analysis
+        ("test_9601.ac0", "AC Analysis"),
         ("test_9601.sw0", "DC Analysis"),
     ])
     def test_convert_format(self, input_file, expected_plotname, temp_raw_file):
@@ -131,10 +131,9 @@ class TestDataIntegrity:
     def test_point_count_preserved(self, temp_raw_file):
         """Test that converted file has same number of points as original"""
         # Read original
-        result = read_hspice_file(EXAMPLE_TR0)
-        data_dict = get_data_dict(result)
-        original_points = len(list(data_dict.values())[0])
-        original_variables = len(data_dict)
+        result = read_waveform(EXAMPLE_TR0)
+        original_points = len(result)
+        original_variables = result.num_vars()
         
         # Convert
         convert_to_raw(EXAMPLE_TR0, temp_raw_file)

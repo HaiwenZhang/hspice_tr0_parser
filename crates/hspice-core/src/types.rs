@@ -1,10 +1,12 @@
-//! Common types, errors, and constants for HSPICE file operations
+//! Common types, errors, and constants for waveform file operations
+//!
+//! This module provides unified data structures for parsing various SPICE
+//! waveform formats including HSPICE TR0 and SPICE3 raw files.
 
 use num_complex::Complex64;
-use std::collections::HashMap;
 
 // ============================================================================
-// Constants
+// Constants (HSPICE format specific)
 // ============================================================================
 
 /// Header character positions (matching C implementation)
@@ -54,6 +56,79 @@ pub enum PostVersion {
     V2001,
 }
 
+/// Analysis/simulation type
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AnalysisType {
+    /// Transient analysis (.tr0)
+    Transient,
+    /// AC frequency analysis (.ac0)
+    AC,
+    /// DC sweep analysis (.sw0)
+    DC,
+    /// Operating point
+    Operating,
+    /// Noise analysis
+    Noise,
+    /// Unknown or unrecognized
+    #[default]
+    Unknown,
+}
+
+impl AnalysisType {
+    /// Infer analysis type from file extension
+    pub fn from_extension(ext: &str) -> Self {
+        match ext.to_lowercase().as_str() {
+            "tr0" => AnalysisType::Transient,
+            "ac0" => AnalysisType::AC,
+            "sw0" => AnalysisType::DC,
+            _ => AnalysisType::Unknown,
+        }
+    }
+
+    /// Infer analysis type from scale name
+    pub fn from_scale_name(name: &str) -> Self {
+        match name.to_uppercase().as_str() {
+            "TIME" => AnalysisType::Transient,
+            "HERTZ" | "FREQ" | "FREQUENCY" => AnalysisType::AC,
+            _ => AnalysisType::DC, // DC sweep uses parameter name as scale
+        }
+    }
+}
+
+/// Variable type (voltage, current, time, etc.)
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum VarType {
+    /// Time variable (scale for transient)
+    Time,
+    /// Frequency variable (scale for AC)
+    Frequency,
+    /// Voltage signal
+    Voltage,
+    /// Current signal
+    Current,
+    /// Unknown or other type
+    #[default]
+    Unknown,
+}
+
+impl VarType {
+    /// Infer variable type from signal name
+    pub fn from_name(name: &str) -> Self {
+        let lower = name.to_lowercase();
+        if lower == "time" {
+            VarType::Time
+        } else if lower == "hertz" || lower == "freq" || lower == "frequency" {
+            VarType::Frequency
+        } else if lower.starts_with("v(") || lower.starts_with("v_") {
+            VarType::Voltage
+        } else if lower.starts_with("i(") || lower.starts_with("i_") {
+            VarType::Current
+        } else {
+            VarType::Unknown
+        }
+    }
+}
+
 /// Vector data - either real or complex
 #[derive(Debug, Clone)]
 pub enum VectorData {
@@ -61,55 +136,243 @@ pub enum VectorData {
     Complex(Vec<Complex64>),
 }
 
+impl VectorData {
+    /// Get the number of data points
+    pub fn len(&self) -> usize {
+        match self {
+            VectorData::Real(v) => v.len(),
+            VectorData::Complex(v) => v.len(),
+        }
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Check if this is complex data
+    pub fn is_complex(&self) -> bool {
+        matches!(self, VectorData::Complex(_))
+    }
+
+    /// Get real data, returns None if complex
+    pub fn as_real(&self) -> Option<&Vec<f64>> {
+        match self {
+            VectorData::Real(v) => Some(v),
+            VectorData::Complex(_) => None,
+        }
+    }
+
+    /// Get complex data, returns None if real
+    pub fn as_complex(&self) -> Option<&Vec<Complex64>> {
+        match self {
+            VectorData::Real(_) => None,
+            VectorData::Complex(v) => Some(v),
+        }
+    }
+}
+
 // ============================================================================
 // Error Types
 // ============================================================================
 
-/// Error type for HSPICE reading operations
+/// Error type for waveform reading operations
 #[derive(Debug)]
-pub enum HspiceError {
+pub enum WaveformError {
     IoError(std::io::Error),
     ParseError(String),
     FormatError(String),
 }
 
-impl std::fmt::Display for HspiceError {
+impl std::fmt::Display for WaveformError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HspiceError::IoError(e) => write!(f, "IO error: {}", e),
-            HspiceError::ParseError(s) => write!(f, "Parse error: {}", s),
-            HspiceError::FormatError(s) => write!(f, "Format error: {}", s),
+            WaveformError::IoError(e) => write!(f, "IO error: {}", e),
+            WaveformError::ParseError(s) => write!(f, "Parse error: {}", s),
+            WaveformError::FormatError(s) => write!(f, "Format error: {}", s),
         }
     }
 }
 
-impl std::error::Error for HspiceError {
+impl std::error::Error for WaveformError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            HspiceError::IoError(e) => Some(e),
+            WaveformError::IoError(e) => Some(e),
             _ => None,
         }
     }
 }
 
-impl From<std::io::Error> for HspiceError {
+impl From<std::io::Error> for WaveformError {
     fn from(e: std::io::Error) -> Self {
-        HspiceError::IoError(e)
+        WaveformError::IoError(e)
     }
 }
 
-pub type Result<T> = std::result::Result<T, HspiceError>;
+pub type Result<T> = std::result::Result<T, WaveformError>;
+
+// Keep old error name as alias for compatibility during transition
+pub type HspiceError = WaveformError;
 
 // ============================================================================
-// Data Structures
+// Core Data Structures
 // ============================================================================
 
-/// Result of HSPICE file read
-pub struct HspiceResult {
-    pub sweep_name: Option<String>,
-    pub sweep_values: Option<Vec<f64>>,
-    pub data_tables: Vec<HashMap<String, VectorData>>,
-    pub scale_name: String,
-    pub title: String,
-    pub date: String,
+/// Metadata for a single variable/signal
+#[derive(Debug, Clone)]
+pub struct Variable {
+    /// Signal name (e.g., "TIME", "v(out)", "i(vdd)")
+    pub name: String,
+    /// Variable type inferred from name
+    pub var_type: VarType,
 }
+
+impl Variable {
+    /// Create a new variable with type inferred from name
+    pub fn new(name: impl Into<String>) -> Self {
+        let name = name.into();
+        let var_type = VarType::from_name(&name);
+        Self { name, var_type }
+    }
+
+    /// Create a new variable with explicit type
+    pub fn with_type(name: impl Into<String>, var_type: VarType) -> Self {
+        Self {
+            name: name.into(),
+            var_type,
+        }
+    }
+}
+
+/// A single data table (one per sweep point, or one if no sweep)
+#[derive(Debug, Clone)]
+pub struct DataTable {
+    /// Sweep parameter value (None if no sweep)
+    pub sweep_value: Option<f64>,
+    /// Data vectors in variable order (index matches variables Vec)
+    pub vectors: Vec<VectorData>,
+}
+
+impl DataTable {
+    /// Get number of data points
+    pub fn len(&self) -> usize {
+        self.vectors.first().map(|v| v.len()).unwrap_or(0)
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.vectors.is_empty() || self.len() == 0
+    }
+}
+
+/// Waveform simulation result - format independent
+///
+/// This is the unified result type for all supported waveform formats:
+/// - HSPICE binary (.tr0, .ac0, .sw0)
+/// - SPICE3 raw (binary and ASCII)
+///
+/// # Structure
+///
+/// - `variables`: Ordered list of signal metadata. Index 0 is always the scale
+///   variable (TIME for transient, HERTZ for AC, etc.)
+/// - `tables`: One table per sweep point. Each table contains vectors in the
+///   same order as `variables`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use hspice_core::read;
+///
+/// let result = read("simulation.tr0").unwrap();
+/// println!("Title: {}", result.title);
+/// println!("Analysis: {:?}", result.analysis);
+///
+/// // Access by name
+/// if let Some(time) = result.get("TIME") {
+///     println!("Time points: {}", time.len());
+/// }
+///
+/// // Access by index (faster)
+/// let scale = &result.tables[0].vectors[0];
+/// ```
+#[derive(Debug)]
+pub struct WaveformResult {
+    // === Metadata ===
+    /// Simulation title
+    pub title: String,
+    /// Simulation date
+    pub date: String,
+    /// Analysis type (Transient, AC, DC, etc.)
+    pub analysis: AnalysisType,
+
+    // === Variable Definitions ===
+    /// Ordered list of variables. Index 0 is the scale variable.
+    pub variables: Vec<Variable>,
+
+    // === Sweep Information ===
+    /// Sweep parameter name (None if no sweep)
+    pub sweep_param: Option<String>,
+
+    // === Data ===
+    /// Data tables (one per sweep point)
+    pub tables: Vec<DataTable>,
+}
+
+impl WaveformResult {
+    /// Get the scale variable name (first variable)
+    pub fn scale_name(&self) -> &str {
+        self.variables
+            .first()
+            .map(|v| v.name.as_str())
+            .unwrap_or("")
+    }
+
+    /// Get variable index by name
+    pub fn var_index(&self, name: &str) -> Option<usize> {
+        self.variables.iter().position(|v| v.name == name)
+    }
+
+    /// Get signal data by name (from first table)
+    pub fn get(&self, name: &str) -> Option<&VectorData> {
+        self.var_index(name)
+            .and_then(|i| self.tables.first().map(|t| &t.vectors[i]))
+    }
+
+    /// Get scale data (first variable of first table)
+    pub fn scale(&self) -> Option<&VectorData> {
+        self.tables.first().and_then(|t| t.vectors.first())
+    }
+
+    /// Get number of data points
+    pub fn len(&self) -> usize {
+        self.tables.first().map(|t| t.len()).unwrap_or(0)
+    }
+
+    /// Check if result is empty
+    pub fn is_empty(&self) -> bool {
+        self.tables.is_empty() || self.len() == 0
+    }
+
+    /// Get number of variables
+    pub fn num_vars(&self) -> usize {
+        self.variables.len()
+    }
+
+    /// Get number of sweep points (tables)
+    pub fn num_sweeps(&self) -> usize {
+        self.tables.len()
+    }
+
+    /// Get all variable names
+    pub fn var_names(&self) -> Vec<&str> {
+        self.variables.iter().map(|v| v.name.as_str()).collect()
+    }
+
+    /// Check if result has sweep data
+    pub fn has_sweep(&self) -> bool {
+        self.sweep_param.is_some() && self.tables.len() > 1
+    }
+}
+
+// Keep old name as alias during transition
+pub type HspiceResult = WaveformResult;

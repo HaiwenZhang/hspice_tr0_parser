@@ -1,0 +1,36 @@
+{
+  "name": "hspice-wasm",
+  "version": "1.2.0",
+  "description": "High-performance HSPICE waveform file parser for JavaScript/TypeScript",
+  "main": "hspice_wasm.js",
+  "types": "hspice_wasm.d.ts",
+  "files": [
+    "hspice_wasm.js",
+    "hspice_wasm.d.ts",
+    "hspice_wasm_bg.wasm",
+    "hspice_wasm_bg.wasm.d.ts"
+  ],
+  "keywords": [
+    "hspice",
+    "spice",
+    "waveform",
+    "parser",
+    "tr0",
+    "eda",
+    "simulation",
+    "wasm",
+    "webassembly"
+  ],
+  "author": "Haiwen Zhang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/haiwen/hspice_tr0_parser"
+  },
+  "bugs": {
+    "url": "https://github.com/haiwen/hspice_tr0_parser/issues"
+  },
+  "sideEffects": [
+    "./hspice_wasm.js"
+  ]
+}

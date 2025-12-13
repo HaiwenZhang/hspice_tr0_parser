@@ -6,7 +6,7 @@
 //! - test_stream: Streaming API
 //! - test_convert: SPICE3 raw conversion
 
-use hspice_core::{read, read_and_convert, read_debug, VectorData};
+use hspice_core::{read, read_and_convert, read_debug, AnalysisType, VectorData};
 use hspice_core::{read_stream, read_stream_chunked};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -64,38 +64,33 @@ fn test_result_structure() {
 
     let result = read(path.to_str().unwrap()).unwrap();
 
-    // Check metadata fields are non-empty
     assert!(!result.title.is_empty(), "title should not be empty");
     assert!(
-        !result.scale_name.is_empty(),
+        !result.scale_name().is_empty(),
         "scale_name should not be empty"
     );
-
-    // Check data tables exist
     assert!(
-        !result.data_tables.is_empty(),
+        !result.tables.is_empty(),
         "should have at least one data table"
     );
+    assert!(!result.variables.is_empty(), "should have variables");
 }
 
 #[test]
-fn test_data_dictionary_structure() {
+fn test_data_structure() {
     let path = example_tr0();
     if skip_if_missing(&path) {
         return;
     }
 
     let result = read(path.to_str().unwrap()).unwrap();
-    let data = &result.data_tables[0];
+    let table = &result.tables[0];
 
-    assert!(!data.is_empty(), "data table should have signals");
+    assert!(!table.vectors.is_empty(), "table should have vectors");
 
-    for (name, values) in data {
-        assert!(!name.is_empty(), "signal name should not be empty");
-        match values {
-            VectorData::Real(v) => assert!(!v.is_empty(), "signal {} should have data", name),
-            VectorData::Complex(v) => assert!(!v.is_empty(), "signal {} should have data", name),
-        }
+    for (var, vector) in result.variables.iter().zip(table.vectors.iter()) {
+        assert!(!var.name.is_empty(), "variable name should not be empty");
+        assert!(!vector.is_empty(), "vector {} should have data", var.name);
     }
 }
 
@@ -109,14 +104,12 @@ fn test_time_signal_exists() {
     let result = read(path.to_str().unwrap()).unwrap();
 
     assert_eq!(
-        result.scale_name.to_uppercase(),
+        result.scale_name().to_uppercase(),
         "TIME",
         "scale should be TIME"
     );
-
-    let data = &result.data_tables[0];
     assert!(
-        data.contains_key("TIME") || data.contains_key("time"),
+        result.get("TIME").is_some() || result.get("time").is_some(),
         "TIME signal should exist"
     );
 }
@@ -129,17 +122,10 @@ fn test_data_consistency() {
     }
 
     let result = read(path.to_str().unwrap()).unwrap();
-    let data = &result.data_tables[0];
+    let table = &result.tables[0];
 
-    let lengths: HashSet<usize> = data
-        .values()
-        .map(|v| match v {
-            VectorData::Real(vec) => vec.len(),
-            VectorData::Complex(vec) => vec.len(),
-        })
-        .collect();
-
-    assert_eq!(lengths.len(), 1, "all signals should have same length");
+    let lengths: HashSet<usize> = table.vectors.iter().map(|v| v.len()).collect();
+    assert_eq!(lengths.len(), 1, "all vectors should have same length");
 }
 
 #[test]
@@ -185,11 +171,9 @@ fn test_multiple_reads() {
     let result1 = read(path.to_str().unwrap()).unwrap();
     let result2 = read(path.to_str().unwrap()).unwrap();
 
-    assert_eq!(
-        result1.data_tables[0].keys().collect::<HashSet<_>>(),
-        result2.data_tables[0].keys().collect::<HashSet<_>>(),
-        "signal names should match across reads"
-    );
+    let names1: HashSet<_> = result1.variables.iter().map(|v| &v.name).collect();
+    let names2: HashSet<_> = result2.variables.iter().map(|v| &v.name).collect();
+    assert_eq!(names1, names2, "variable names should match across reads");
 }
 
 #[test]
@@ -201,11 +185,11 @@ fn test_data_values_valid() {
 
     let result = read(path.to_str().unwrap()).unwrap();
 
-    for (name, values) in &result.data_tables[0] {
-        if let VectorData::Real(vec) = values {
-            for &v in vec {
-                assert!(!v.is_nan(), "signal {} contains NaN", name);
-                assert!(!v.is_infinite(), "signal {} contains Inf", name);
+    for (var, vector) in result.variables.iter().zip(result.tables[0].vectors.iter()) {
+        if let VectorData::Real(vec) = vector {
+            for v in vec {
+                assert!(!v.is_nan(), "variable {} contains NaN", var.name);
+                assert!(!v.is_infinite(), "variable {} contains Inf", var.name);
             }
         }
     }
@@ -226,7 +210,8 @@ fn test_read_9601_tr0() {
     assert!(result.is_ok(), "9601 transient format should be readable");
 
     let data = result.unwrap();
-    assert_eq!(data.scale_name.to_uppercase(), "TIME");
+    assert_eq!(data.scale_name().to_uppercase(), "TIME");
+    assert_eq!(data.analysis, AnalysisType::Transient);
 }
 
 #[test]
@@ -240,7 +225,7 @@ fn test_read_2001_tr0() {
     assert!(result.is_ok(), "2001 transient format should be readable");
 
     let data = result.unwrap();
-    assert_eq!(data.scale_name.to_uppercase(), "TIME");
+    assert_eq!(data.scale_name().to_uppercase(), "TIME");
 }
 
 #[test]
@@ -254,12 +239,11 @@ fn test_read_9601_ac0() {
     assert!(result.is_ok(), "AC format should be readable");
 
     let data = result.unwrap();
-    assert_eq!(data.scale_name.to_uppercase(), "HERTZ");
+    assert_eq!(data.scale_name().to_uppercase(), "HERTZ");
+    assert_eq!(data.analysis, AnalysisType::AC);
 
     // AC analysis should have complex data
-    let has_complex = data.data_tables[0]
-        .values()
-        .any(|v| matches!(v, VectorData::Complex(_)));
+    let has_complex = data.tables[0].vectors.iter().any(|v| v.is_complex());
     assert!(has_complex, "AC analysis should have complex data");
 }
 
@@ -274,11 +258,11 @@ fn test_read_9601_sw0() {
     assert!(result.is_ok(), "DC sweep format should be readable");
 
     let data = result.unwrap();
-    assert!(!data.scale_name.is_empty(), "scale name should exist");
+    assert!(!data.scale_name().is_empty(), "scale name should exist");
 }
 
 #[test]
-fn test_format_comparison_same_signals() {
+fn test_format_comparison_same_variables() {
     let path_9601 = test_file("test_9601.tr0");
     let path_2001 = test_file("test_2001.tr0");
 
@@ -289,12 +273,12 @@ fn test_format_comparison_same_signals() {
     let result_9601 = read(path_9601.to_str().unwrap()).unwrap();
     let result_2001 = read(path_2001.to_str().unwrap()).unwrap();
 
-    let signals_9601: HashSet<_> = result_9601.data_tables[0].keys().collect();
-    let signals_2001: HashSet<_> = result_2001.data_tables[0].keys().collect();
+    let vars_9601: HashSet<_> = result_9601.variables.iter().map(|v| &v.name).collect();
+    let vars_2001: HashSet<_> = result_2001.variables.iter().map(|v| &v.name).collect();
 
     assert_eq!(
-        signals_9601, signals_2001,
-        "both formats should have same signals"
+        vars_9601, vars_2001,
+        "both formats should have same variables"
     );
 }
 
@@ -310,17 +294,9 @@ fn test_format_comparison_same_length() {
     let result_9601 = read(path_9601.to_str().unwrap()).unwrap();
     let result_2001 = read(path_2001.to_str().unwrap()).unwrap();
 
-    let len_9601 = match result_9601.data_tables[0].values().next().unwrap() {
-        VectorData::Real(v) => v.len(),
-        VectorData::Complex(v) => v.len(),
-    };
-    let len_2001 = match result_2001.data_tables[0].values().next().unwrap() {
-        VectorData::Real(v) => v.len(),
-        VectorData::Complex(v) => v.len(),
-    };
-
     assert_eq!(
-        len_9601, len_2001,
+        result_9601.len(),
+        result_2001.len(),
         "both formats should have same data length"
     );
 }
@@ -417,27 +393,13 @@ fn test_stream_total_points_match() {
 
     // Get full data
     let full_result = read(path.to_str().unwrap()).unwrap();
-    let full_data = &full_result.data_tables[0];
-    let total_points_full = match full_data.values().next().unwrap() {
-        VectorData::Real(v) => v.len(),
-        VectorData::Complex(v) => v.len(),
-    };
+    let total_points_full = full_result.len();
 
     // Count streamed points
     let reader = read_stream_chunked(path.to_str().unwrap(), 100).unwrap();
     let total_points_stream: usize = reader
         .filter_map(|r| r.ok())
-        .map(|chunk| {
-            chunk
-                .data
-                .values()
-                .next()
-                .map(|v| match v {
-                    VectorData::Real(vec) => vec.len(),
-                    VectorData::Complex(vec) => vec.len(),
-                })
-                .unwrap_or(0)
-        })
+        .map(|chunk| chunk.data.values().next().map(|v| v.len()).unwrap_or(0))
         .sum();
 
     assert_eq!(
@@ -491,7 +453,6 @@ fn test_convert_to_raw() {
     assert!(result.is_ok(), "conversion should succeed");
     assert!(output.exists(), "output file should exist");
 
-    // Cleanup
     let _ = std::fs::remove_file(&output);
 }
 
@@ -506,11 +467,9 @@ fn test_convert_creates_valid_file() {
 
     read_and_convert(input.to_str().unwrap(), output.to_str().unwrap()).unwrap();
 
-    // Check file is not empty
     let metadata = std::fs::metadata(&output).unwrap();
     assert!(metadata.len() > 0, "output file should not be empty");
 
-    // Check it starts with "Title" (SPICE3 raw header is text until "Binary:")
     let content = std::fs::read(&output).unwrap();
     let header = String::from_utf8_lossy(&content[..100.min(content.len())]);
     assert!(
@@ -518,6 +477,5 @@ fn test_convert_creates_valid_file() {
         "should start with Title header"
     );
 
-    // Cleanup
     let _ = std::fs::remove_file(&output);
 }

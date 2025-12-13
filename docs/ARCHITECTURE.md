@@ -1,6 +1,6 @@
 # hspice_tr0_parser Architecture
 
-## 1. Architecture Overview
+## 1. Overview
 
 ```mermaid
 graph TB
@@ -12,104 +12,75 @@ graph TB
         subgraph Bindings["Bindings Layer"]
             Python["hspice-python<br/>PyO3 + NumPy"]
             FFI["hspice-ffi<br/>C/C++ Static Library"]
+            WASM["hspice-wasm<br/>WebAssembly"]
         end
     end
 
     Python --> HspiceCore
     FFI --> HspiceCore
+    WASM --> HspiceCore
 
     subgraph Targets["Target Runtimes"]
         PyRuntime["Python 3.10+"]
         RustApp["Native Rust Apps"]
-        CApp["C/C++ Applications"]
+        CApp["C/C++ Apps"]
+        Browser["Web Browser"]
     end
 
     Python --> PyRuntime
     HspiceCore --> RustApp
     FFI --> CApp
+    WASM --> Browser
 ```
 
-## 2. Why Three Crates?
+## 2. Why Four Crates?
 
-### 2.1 Core Problems
-
-| Problem          | Single Crate Approach                      | Three Crate Approach                              |
-| ---------------- | ------------------------------------------ | ------------------------------------------------- |
-| Dependency Bloat | PyO3/FFI forced on all users               | On-demand inclusion, zero binding deps for core   |
-| Compile Time     | Full rebuild even for binding-only changes | Incremental builds, bindings don't recompile core |
-| Binary Size      | Includes all binding code redundantly      | Each target only includes necessary code          |
-| Test Isolation   | Binding tests mixed with core tests        | Independent testing per layer                     |
-
-### 2.2 Design Principles
-
-```yaml
-principle: "Write Once, Bind Twice"
-rationale: |
-  Core parsing logic is implemented once, then adapted to multiple runtimes
-  through different binding layers. This is interface adaptation, not code duplication.
-
-constraints:
-  - hspice-core must not depend on any binding frameworks (PyO3, wasm-bindgen)
-  - Binding layers only handle data conversion, no business logic
-  - New features are added to hspice-core only; binding layers benefit automatically
-```
+| Problem          | Single Crate                | Multi-Crate                              |
+| ---------------- | --------------------------- | ---------------------------------------- |
+| Dependency Bloat | PyO3/FFI/WASM forced on all | On-demand, zero deps for core            |
+| Compile Time     | Full rebuild always         | Incremental, bindings don't rebuild core |
+| Binary Size      | All binding code included   | Each target only necessary code          |
+| Test Isolation   | Tests mixed                 | Independent per layer                    |
 
 ## 3. Crate Details
 
-### 3.1 hspice-core (Core Library)
+### 3.1 hspice-core
 
 ```toml
-# Role: Pure Rust library, single source of truth for all algorithms
 [dependencies]
-byteorder = "1.5"      # Byte order handling
-memmap2 = "0.9"        # Memory-mapped I/O
-num-complex = "0.4"    # Complex number operations
+byteorder = "1.5"
+memmap2 = "0.9"
+num-complex = "0.4"
+anyhow = "1.0"
 ```
 
-**Responsibilities:**
+**Core data structure:**
 
-- ✅ HSPICE binary file parsing
-- ✅ Memory-mapped file reading
-- ✅ Streaming for large files
-- ✅ SPICE3 raw format conversion
-- ❌ Any runtime-specific data type conversions
-
-**Module Structure:**
-
-```
-hspice-core/src/
-├── lib.rs        # Public API
-├── types.rs      # Type definitions
-├── reader.rs     # I/O layer
-├── parser.rs     # Parsing layer
-├── stream.rs     # Streaming reader
-└── writer.rs     # Format conversion
+```rust
+pub struct WaveformResult {
+    pub title: String,
+    pub date: String,
+    pub analysis: AnalysisType,
+    pub variables: Vec<Variable>,
+    pub sweep_param: Option<String>,
+    pub tables: Vec<DataTable>,
+}
 ```
 
-### 3.2 hspice-python (Python Bindings)
+### 3.2 hspice-python
 
 ```toml
-# Role: Bridge between Python and Rust worlds
-[lib]
-crate-type = ["cdylib"]  # Compiles to .so/.pyd
-
 [dependencies]
 hspice-core = { path = "../hspice-core" }
 pyo3 = { features = ["extension-module", "abi3-py310"] }
 numpy = "0.23"
 ```
 
-**Responsibilities:**
+Exposes: `read()`, `convert_to_raw()`, `stream()`
 
-- ✅ `Rust Vec<f64>` ↔ `NumPy ndarray`
-- ✅ `Rust Result<T>` → `Python Exception`
-- ✅ Provide Pythonic API conventions
-- ❌ Implement any parsing logic
-
-### 3.3 hspice-ffi (C Bindings)
+### 3.3 hspice-ffi
 
 ```toml
-# Role: C/C++ language bindings
 [lib]
 crate-type = ["staticlib", "cdylib"]
 
@@ -117,23 +88,30 @@ crate-type = ["staticlib", "cdylib"]
 hspice-core = { path = "../hspice-core" }
 ```
 
-**Responsibilities:**
+Exposes: `waveform_read()`, `waveform_free()`, `waveform_get_*()` functions
 
-- ✅ Opaque handles (CHspiceResult)
-- ✅ C-style error handling (NULL returns)
-- ✅ Memory-safe wrappers
-- ❌ Implement any parsing logic
+### 3.4 hspice-wasm
+
+```toml
+[dependencies]
+hspice-core = { path = "../hspice-core" }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+```
+
+Exposes: `parseHspice()`, `getSignalNames()`, `getSignalData()`
 
 ## 4. Dependency Graph
 
 ```mermaid
 graph LR
     subgraph External["External Dependencies"]
-        memmap2["memmap2 0.9"]
-        byteorder["byteorder 1.5"]
-        numcomplex["num-complex 0.4"]
-        pyo3["pyo3 0.23"]
-        numpy["numpy 0.23"]
+        memmap2["memmap2"]
+        byteorder["byteorder"]
+        numcomplex["num-complex"]
+        pyo3["pyo3"]
+        numpy["numpy"]
+        wasm["wasm-bindgen"]
     end
 
     Core["hspice-core"] --> memmap2
@@ -145,49 +123,42 @@ graph LR
     Python --> numpy
 
     FFI["hspice-ffi"] --> Core
+
+    WASM["hspice-wasm"] --> Core
+    WASM --> wasm
 ```
 
 ## 5. Build Artifacts
 
-| Crate           | Artifact Type | File Format    | Use Case          |
-| --------------- | ------------- | -------------- | ----------------- |
-| `hspice-core`   | `rlib`        | `.rlib`        | Rust dependencies |
-| `hspice-python` | `cdylib`      | `.so` / `.pyd` | Python import     |
-| `hspice-ffi`    | `staticlib`   | `.a`           | C/C++ linking     |
+| Crate           | Type        | Format         | Use Case      |
+| --------------- | ----------- | -------------- | ------------- |
+| `hspice-core`   | `rlib`      | `.rlib`        | Rust deps     |
+| `hspice-python` | `cdylib`    | `.so` / `.pyd` | Python import |
+| `hspice-ffi`    | `staticlib` | `.a`           | C/C++ linking |
+| `hspice-wasm`   | `cdylib`    | `.wasm`        | Browser       |
 
 ## 6. Directory Structure
 
 ```
 hspice_tr0_parser/
-├── Cargo.toml              # Workspace definition
+├── Cargo.toml               # Workspace
+├── pyproject.toml           # Python config
+├── hspice_tr0_parser.py     # Python wrapper
 ├── crates/
-│   ├── hspice-core/       # Core library
-│   │   ├── Cargo.toml     # No binding dependencies
-│   │   └── src/
-│   ├── hspice-python/     # Python bindings
-│   │   ├── Cargo.toml     # depends on hspice-core + pyo3
-│   │   └── src/
-│   └── hspice-ffi/        # C FFI
-│       ├── Cargo.toml     # depends on hspice-core
-│       └── src/
-├── pyproject.toml          # maturin configuration
-├── hspice_tr0_parser.py    # Python wrapper
-├── include/                # C header files
-├── tests/                  # Python tests
-└── example/                # Example files
-```
-
-## 7. FAQ
-
-### Q: How do I use only the Rust API?
-
-**A:**
-
-```toml
-[dependencies]
-hspice-core = { git = "https://github.com/HaiwenZhang/hspice_tr0_parser" }
+│   ├── hspice-core/
+│   ├── hspice-python/
+│   ├── hspice-ffi/
+│   └── hspice-wasm/
+│       ├── package.json     # npm config
+│       └── hspice_wasm.d.ts # TypeScript types
+├── include/                  # C headers
+├── docs/
+│   ├── ARCHITECTURE.md
+│   └── api/
+├── tests/                    # Python tests
+└── example/
 ```
 
 ---
 
-_Document Version: 2.0.0 | Last Updated: 2025-12-13_
+_Document Version: 3.0.0 | Last Updated: 2025-12-13_

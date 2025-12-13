@@ -1,15 +1,10 @@
-//! C Foreign Function Interface (FFI) for HSPICE parser
+//! C Foreign Function Interface (FFI) for waveform parser
 //!
-//! This module provides a C-compatible API for using the HSPICE parser
+//! This module provides a C-compatible API for using the waveform parser
 //! from C, C++, and other languages that support C FFI.
-//!
-//! # Safety
-//!
-//! All functions in this module are marked as `unsafe` and require
-//! careful handling of pointers for memory safety.
 
 use hspice_core::{
-    read_debug, read_stream_chunked, DataChunk, HspiceResult, HspiceStreamReader, VectorData,
+    read_debug, read_stream_chunked, DataChunk, HspiceStreamReader, VectorData, WaveformResult,
 };
 use std::ffi::{c_char, c_double, c_int, CStr, CString};
 use std::ptr;
@@ -18,49 +13,27 @@ use std::ptr;
 // Opaque Types for C
 // ============================================================================
 
-/// Opaque handle to HspiceResult
-/// Includes cached CStrings for safe C string returns
+/// Opaque handle to WaveformResult
 #[repr(C)]
-pub struct CHspiceResult {
-    inner: Box<HspiceResult>,
-    // Cached CStrings for safe pointer returns to C
+pub struct CWaveformResult {
+    inner: Box<WaveformResult>,
     cached_title: CString,
     cached_date: CString,
     cached_scale_name: CString,
-    cached_sweep_name: Option<CString>,
-}
-
-/// Opaque handle to a data table (HashMap<String, VectorData>)
-#[repr(C)]
-pub struct CDataTable {
-    inner: std::collections::HashMap<String, VectorData>,
-}
-
-/// Opaque handle to signal data
-#[repr(C)]
-pub struct CSignalData {
-    name: CString,
-    data: VectorData,
+    cached_sweep_param: Option<CString>,
+    cached_var_names: Vec<CString>,
 }
 
 // ============================================================================
 // Result Creation and Destruction
 // ============================================================================
 
-/// Read an HSPICE binary file and return a result handle.
-///
-/// # Arguments
-/// * `filename` - Path to the HSPICE file (null-terminated C string)
-/// * `debug` - Debug level (0=quiet, 1=info, 2=verbose)
-///
-/// # Returns
-/// * Pointer to CHspiceResult on success
-/// * NULL on error
-///
-/// # Safety
-/// The caller must free the result using `hspice_result_free`.
+/// Read a waveform file and return a result handle.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_read(filename: *const c_char, debug: c_int) -> *mut CHspiceResult {
+pub unsafe extern "C" fn waveform_read(
+    filename: *const c_char,
+    debug: c_int,
+) -> *mut CWaveformResult {
     if filename.is_null() {
         return ptr::null_mut();
     }
@@ -72,39 +45,41 @@ pub unsafe extern "C" fn hspice_read(filename: *const c_char, debug: c_int) -> *
 
     match read_debug(filename_cstr, debug) {
         Ok(result) => {
-            // Cache CStrings for safe pointer returns
             let cached_title = CString::new(result.title.clone()).unwrap_or_default();
             let cached_date = CString::new(result.date.clone()).unwrap_or_default();
-            let cached_scale_name = CString::new(result.scale_name.clone()).unwrap_or_default();
-            let cached_sweep_name = result
-                .sweep_name
+            let cached_scale_name =
+                CString::new(result.scale_name().to_string()).unwrap_or_default();
+            let cached_sweep_param = result
+                .sweep_param
                 .as_ref()
                 .and_then(|s| CString::new(s.clone()).ok());
+            let cached_var_names: Vec<CString> = result
+                .variables
+                .iter()
+                .filter_map(|v| CString::new(v.name.clone()).ok())
+                .collect();
 
-            let boxed = Box::new(CHspiceResult {
+            Box::into_raw(Box::new(CWaveformResult {
                 inner: Box::new(result),
                 cached_title,
                 cached_date,
                 cached_scale_name,
-                cached_sweep_name,
-            });
-            Box::into_raw(boxed)
+                cached_sweep_param,
+                cached_var_names,
+            }))
         }
         Err(e) => {
             if debug > 0 {
-                eprintln!("hspice_read error: {:?}", e);
+                eprintln!("waveform_read error: {:?}", e);
             }
             ptr::null_mut()
         }
     }
 }
 
-/// Free an HSPICE result handle.
-///
-/// # Safety
-/// Must only be called with a pointer returned by `hspice_read`.
+/// Free a waveform result handle.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_free(result: *mut CHspiceResult) {
+pub unsafe extern "C" fn waveform_free(result: *mut CWaveformResult) {
     if !result.is_null() {
         drop(Box::from_raw(result));
     }
@@ -114,336 +89,258 @@ pub unsafe extern "C" fn hspice_result_free(result: *mut CHspiceResult) {
 // Metadata Accessors
 // ============================================================================
 
-/// Get the title string from the result.
-///
-/// # Returns
-/// Pointer to null-terminated string (valid until result is freed)
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_title(result: *const CHspiceResult) -> *const c_char {
+pub unsafe extern "C" fn waveform_get_title(result: *const CWaveformResult) -> *const c_char {
     if result.is_null() {
         return ptr::null();
     }
-    let result = &*result;
-    result.cached_title.as_ptr()
+    (*result).cached_title.as_ptr()
 }
 
-/// Get the date string from the result.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_date(result: *const CHspiceResult) -> *const c_char {
+pub unsafe extern "C" fn waveform_get_date(result: *const CWaveformResult) -> *const c_char {
     if result.is_null() {
         return ptr::null();
     }
-    let result = &*result;
-    result.cached_date.as_ptr()
+    (*result).cached_date.as_ptr()
 }
 
-/// Get the scale name (e.g., "TIME") from the result.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_scale_name(
-    result: *const CHspiceResult,
-) -> *const c_char {
+pub unsafe extern "C" fn waveform_get_scale_name(result: *const CWaveformResult) -> *const c_char {
     if result.is_null() {
         return ptr::null();
     }
-    let result = &*result;
-    result.cached_scale_name.as_ptr()
+    (*result).cached_scale_name.as_ptr()
 }
 
-/// Get the number of data tables (sweep points).
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_table_count(result: *const CHspiceResult) -> c_int {
+pub unsafe extern "C" fn waveform_get_analysis_type(result: *const CWaveformResult) -> c_int {
+    if result.is_null() {
+        return -1;
+    }
+    match (*result).inner.analysis {
+        hspice_core::AnalysisType::Transient => 0,
+        hspice_core::AnalysisType::AC => 1,
+        hspice_core::AnalysisType::DC => 2,
+        hspice_core::AnalysisType::Operating => 3,
+        hspice_core::AnalysisType::Noise => 4,
+        hspice_core::AnalysisType::Unknown => -1,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waveform_get_table_count(result: *const CWaveformResult) -> c_int {
     if result.is_null() {
         return 0;
     }
-    let result = &*result;
-    result.inner.data_tables.len() as c_int
+    (*result).inner.tables.len() as c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waveform_get_var_count(result: *const CWaveformResult) -> c_int {
+    if result.is_null() {
+        return 0;
+    }
+    (*result).inner.variables.len() as c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waveform_get_point_count(result: *const CWaveformResult) -> c_int {
+    if result.is_null() {
+        return 0;
+    }
+    (*result).inner.len() as c_int
+}
+
+// ============================================================================
+// Variable Accessors
+// ============================================================================
+
+#[no_mangle]
+pub unsafe extern "C" fn waveform_get_var_name(
+    result: *const CWaveformResult,
+    index: c_int,
+) -> *const c_char {
+    if result.is_null() || index < 0 {
+        return ptr::null();
+    }
+    let r = &*result;
+    let idx = index as usize;
+    if idx >= r.cached_var_names.len() {
+        return ptr::null();
+    }
+    r.cached_var_names[idx].as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waveform_get_var_type(
+    result: *const CWaveformResult,
+    index: c_int,
+) -> c_int {
+    if result.is_null() || index < 0 {
+        return -1;
+    }
+    let r = &(*result).inner;
+    let idx = index as usize;
+    if idx >= r.variables.len() {
+        return -1;
+    }
+    match r.variables[idx].var_type {
+        hspice_core::VarType::Time => 0,
+        hspice_core::VarType::Frequency => 1,
+        hspice_core::VarType::Voltage => 2,
+        hspice_core::VarType::Current => 3,
+        hspice_core::VarType::Unknown => -1,
+    }
 }
 
 // ============================================================================
 // Sweep Accessors
 // ============================================================================
 
-/// Check if the result has sweep data.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_has_sweep(result: *const CHspiceResult) -> c_int {
+pub unsafe extern "C" fn waveform_has_sweep(result: *const CWaveformResult) -> c_int {
     if result.is_null() {
         return 0;
     }
-    let result = &*result;
-    if result.inner.sweep_name.is_some() {
+    if (*result).inner.has_sweep() {
         1
     } else {
         0
     }
 }
 
-/// Get the sweep parameter name.
-///
-/// # Returns
-/// Pointer to null-terminated string, or NULL if no sweep
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_sweep_name(
-    result: *const CHspiceResult,
-) -> *const c_char {
+pub unsafe extern "C" fn waveform_get_sweep_param(result: *const CWaveformResult) -> *const c_char {
     if result.is_null() {
         return ptr::null();
     }
-    let result = &*result;
-    match &result.cached_sweep_name {
-        Some(name) => name.as_ptr(),
+    match &(*result).cached_sweep_param {
+        Some(s) => s.as_ptr(),
         None => ptr::null(),
     }
 }
 
-/// Get the number of sweep values.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_sweep_count(result: *const CHspiceResult) -> c_int {
-    if result.is_null() {
-        return 0;
-    }
-    let result = &*result;
-    match &result.inner.sweep_values {
-        Some(vec) => vec.len() as c_int,
-        None => 0,
-    }
-}
-
-/// Get sweep values as an array.
-///
-/// # Arguments
-/// * `result` - Result handle
-/// * `out_values` - Output buffer for values
-/// * `max_count` - Maximum number of values to copy
-///
-/// # Returns
-/// Number of values copied
-#[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_sweep_values(
-    result: *const CHspiceResult,
-    out_values: *mut c_double,
-    max_count: c_int,
-) -> c_int {
-    if result.is_null() || out_values.is_null() || max_count <= 0 {
-        return 0;
-    }
-    let result = &*result;
-    match &result.inner.sweep_values {
-        Some(vec) => {
-            let count = std::cmp::min(vec.len(), max_count as usize);
-            for (i, &val) in vec.iter().take(count).enumerate() {
-                *out_values.add(i) = val;
-            }
-            count as c_int
-        }
-        None => 0,
-    }
-}
-
-// ============================================================================
-// Signal Data Accessors
-// ============================================================================
-
-/// Get the number of signals in a data table.
-#[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_signal_count(
-    result: *const CHspiceResult,
+pub unsafe extern "C" fn waveform_get_sweep_value(
+    result: *const CWaveformResult,
     table_index: c_int,
-) -> c_int {
+) -> c_double {
     if result.is_null() || table_index < 0 {
-        return 0;
+        return 0.0;
     }
-    let result = &*result;
+    let r = &(*result).inner;
     let idx = table_index as usize;
-    if idx >= result.inner.data_tables.len() {
-        return 0;
+    if idx >= r.tables.len() {
+        return 0.0;
     }
-    result.inner.data_tables[idx].len() as c_int
+    r.tables[idx].sweep_value.unwrap_or(0.0)
 }
 
-/// Get signal names from a data table.
-///
-/// # Arguments
-/// * `result` - Result handle
-/// * `table_index` - Index of the data table
-/// * `out_names` - Array of char* pointers to receive names
-/// * `max_count` - Maximum number of names to retrieve
-///
-/// # Returns
-/// Number of names copied
-///
-/// # Note
-/// The returned strings are valid until the result is freed.
+// ============================================================================
+// Data Accessors
+// ============================================================================
+
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_signal_names(
-    result: *const CHspiceResult,
+pub unsafe extern "C" fn waveform_get_data_length(
+    result: *const CWaveformResult,
     table_index: c_int,
-    out_names: *mut *const c_char,
+    var_index: c_int,
+) -> c_int {
+    if result.is_null() || table_index < 0 || var_index < 0 {
+        return 0;
+    }
+    let ti = table_index as usize;
+    let vi = var_index as usize;
+    let r = &(*result).inner;
+    if ti >= r.tables.len() || vi >= r.variables.len() {
+        return 0;
+    }
+    r.tables[ti].vectors[vi].len() as c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn waveform_is_complex(
+    result: *const CWaveformResult,
+    table_index: c_int,
+    var_index: c_int,
+) -> c_int {
+    if result.is_null() || table_index < 0 || var_index < 0 {
+        return -1;
+    }
+    let ti = table_index as usize;
+    let vi = var_index as usize;
+    let r = &(*result).inner;
+    if ti >= r.tables.len() || vi >= r.variables.len() {
+        return -1;
+    }
+    if r.tables[ti].vectors[vi].is_complex() {
+        1
+    } else {
+        0
+    }
+}
+
+/// Get real data by variable index.
+#[no_mangle]
+pub unsafe extern "C" fn waveform_get_real_data(
+    result: *const CWaveformResult,
+    table_index: c_int,
+    var_index: c_int,
+    out_buffer: *mut c_double,
     max_count: c_int,
 ) -> c_int {
-    if result.is_null() || out_names.is_null() || table_index < 0 || max_count <= 0 {
-        return 0;
-    }
-    let result = &*result;
-    let idx = table_index as usize;
-    if idx >= result.inner.data_tables.len() {
-        return 0;
-    }
-
-    let table = &result.inner.data_tables[idx];
-    let count = std::cmp::min(table.len(), max_count as usize);
-    for (i, name) in table.keys().take(count).enumerate() {
-        *out_names.add(i) = name.as_ptr() as *const c_char;
-    }
-    count as c_int
-}
-
-/// Get signal data length.
-#[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_signal_length(
-    result: *const CHspiceResult,
-    table_index: c_int,
-    signal_name: *const c_char,
-) -> c_int {
-    if result.is_null() || signal_name.is_null() || table_index < 0 {
-        return 0;
-    }
-    let result = &*result;
-    let idx = table_index as usize;
-    if idx >= result.inner.data_tables.len() {
-        return 0;
-    }
-
-    let name = match CStr::from_ptr(signal_name).to_str() {
-        Ok(s) => s,
-        Err(_) => return 0,
-    };
-
-    match result.inner.data_tables[idx].get(name) {
-        Some(VectorData::Real(vec)) => vec.len() as c_int,
-        Some(VectorData::Complex(vec)) => vec.len() as c_int,
-        None => 0,
-    }
-}
-
-/// Check if signal data is complex.
-///
-/// # Returns
-/// 1 if complex, 0 if real, -1 on error
-#[no_mangle]
-pub unsafe extern "C" fn hspice_result_signal_is_complex(
-    result: *const CHspiceResult,
-    table_index: c_int,
-    signal_name: *const c_char,
-) -> c_int {
-    if result.is_null() || signal_name.is_null() || table_index < 0 {
+    if result.is_null()
+        || out_buffer.is_null()
+        || table_index < 0
+        || var_index < 0
+        || max_count <= 0
+    {
         return -1;
     }
-    let result = &*result;
-    let idx = table_index as usize;
-    if idx >= result.inner.data_tables.len() {
+    let ti = table_index as usize;
+    let vi = var_index as usize;
+    let r = &(*result).inner;
+    if ti >= r.tables.len() || vi >= r.variables.len() {
         return -1;
     }
 
-    let name = match CStr::from_ptr(signal_name).to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-
-    match result.inner.data_tables[idx].get(name) {
-        Some(VectorData::Real(_)) => 0,
-        Some(VectorData::Complex(_)) => 1,
-        None => -1,
-    }
-}
-
-/// Get real signal data.
-///
-/// # Arguments
-/// * `result` - Result handle
-/// * `table_index` - Data table index
-/// * `signal_name` - Signal name
-/// * `out_values` - Output buffer for values
-/// * `max_count` - Maximum number of values to copy
-///
-/// # Returns
-/// Number of values copied, or -1 on error
-#[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_signal_real(
-    result: *const CHspiceResult,
-    table_index: c_int,
-    signal_name: *const c_char,
-    out_values: *mut c_double,
-    max_count: c_int,
-) -> c_int {
-    if result.is_null() || signal_name.is_null() || out_values.is_null() {
-        return -1;
-    }
-    if table_index < 0 || max_count <= 0 {
-        return -1;
-    }
-    let result = &*result;
-    let idx = table_index as usize;
-    if idx >= result.inner.data_tables.len() {
-        return -1;
-    }
-
-    let name = match CStr::from_ptr(signal_name).to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-
-    match result.inner.data_tables[idx].get(name) {
-        Some(VectorData::Real(vec)) => {
+    match &r.tables[ti].vectors[vi] {
+        VectorData::Real(vec) => {
             let count = std::cmp::min(vec.len(), max_count as usize);
-            for (i, &val) in vec.iter().take(count).enumerate() {
-                *out_values.add(i) = val;
-            }
+            std::ptr::copy_nonoverlapping(vec.as_ptr(), out_buffer, count);
             count as c_int
         }
-        _ => -1,
+        VectorData::Complex(_) => -1,
     }
 }
 
-/// Get complex signal data (real and imaginary parts interleaved).
-///
-/// # Arguments
-/// * `result` - Result handle
-/// * `table_index` - Data table index
-/// * `signal_name` - Signal name
-/// * `out_real` - Output buffer for real parts
-/// * `out_imag` - Output buffer for imaginary parts
-/// * `max_count` - Maximum number of complex values to copy
-///
-/// # Returns
-/// Number of complex values copied, or -1 on error
+/// Get complex data by variable index.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_result_get_signal_complex(
-    result: *const CHspiceResult,
+pub unsafe extern "C" fn waveform_get_complex_data(
+    result: *const CWaveformResult,
     table_index: c_int,
-    signal_name: *const c_char,
+    var_index: c_int,
     out_real: *mut c_double,
     out_imag: *mut c_double,
     max_count: c_int,
 ) -> c_int {
-    if result.is_null() || signal_name.is_null() || out_real.is_null() || out_imag.is_null() {
+    if result.is_null() || out_real.is_null() || out_imag.is_null() {
         return -1;
     }
-    if table_index < 0 || max_count <= 0 {
-        return -1;
-    }
-    let result = &*result;
-    let idx = table_index as usize;
-    if idx >= result.inner.data_tables.len() {
+    if table_index < 0 || var_index < 0 || max_count <= 0 {
         return -1;
     }
 
-    let name = match CStr::from_ptr(signal_name).to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    let ti = table_index as usize;
+    let vi = var_index as usize;
+    let r = &(*result).inner;
+    if ti >= r.tables.len() || vi >= r.variables.len() {
+        return -1;
+    }
 
-    match result.inner.data_tables[idx].get(name) {
-        Some(VectorData::Complex(vec)) => {
+    match &r.tables[ti].vectors[vi] {
+        VectorData::Complex(vec) => {
             let count = std::cmp::min(vec.len(), max_count as usize);
             for (i, c) in vec.iter().take(count).enumerate() {
                 *out_real.add(i) = c.re;
@@ -451,30 +348,28 @@ pub unsafe extern "C" fn hspice_result_get_signal_complex(
             }
             count as c_int
         }
-        _ => -1,
+        VectorData::Real(_) => -1,
     }
 }
 
 // ============================================================================
-// Streaming API for C
+// Streaming API
 // ============================================================================
 
-/// Opaque handle to streaming reader
 #[repr(C)]
-pub struct CHspiceStream {
+pub struct CWaveformStream {
     reader: HspiceStreamReader,
     current_chunk: Option<DataChunk>,
     signal_names: Vec<CString>,
     scale_name: CString,
 }
 
-/// Open a file for streaming read.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_stream_open(
+pub unsafe extern "C" fn waveform_stream_open(
     filename: *const c_char,
     chunk_size: c_int,
     debug: c_int,
-) -> *mut CHspiceStream {
+) -> *mut CWaveformStream {
     if filename.is_null() || chunk_size <= 0 {
         return ptr::null_mut();
     }
@@ -486,7 +381,7 @@ pub unsafe extern "C" fn hspice_stream_open(
 
     if debug > 0 {
         eprintln!(
-            "hspice_stream_open: {} (chunk_size={})",
+            "waveform_stream_open: {} (chunk_size={})",
             filename_str, chunk_size
         );
     }
@@ -495,7 +390,7 @@ pub unsafe extern "C" fn hspice_stream_open(
         Ok(r) => r,
         Err(e) => {
             if debug > 0 {
-                eprintln!("hspice_stream_open error: {:?}", e);
+                eprintln!("stream open error: {:?}", e);
             }
             return ptr::null_mut();
         }
@@ -509,7 +404,7 @@ pub unsafe extern "C" fn hspice_stream_open(
         .collect();
     let scale_name = CString::new(metadata.scale_name.clone()).unwrap_or_default();
 
-    Box::into_raw(Box::new(CHspiceStream {
+    Box::into_raw(Box::new(CWaveformStream {
         reader,
         current_chunk: None,
         signal_names,
@@ -517,54 +412,15 @@ pub unsafe extern "C" fn hspice_stream_open(
     }))
 }
 
-/// Close a streaming reader.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_stream_close(stream: *mut CHspiceStream) {
+pub unsafe extern "C" fn waveform_stream_close(stream: *mut CWaveformStream) {
     if !stream.is_null() {
         drop(Box::from_raw(stream));
     }
 }
 
-/// Get the scale name.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_stream_get_scale_name(
-    stream: *const CHspiceStream,
-) -> *const c_char {
-    if stream.is_null() {
-        return ptr::null();
-    }
-    (*stream).scale_name.as_ptr()
-}
-
-/// Get the number of signals.
-#[no_mangle]
-pub unsafe extern "C" fn hspice_stream_get_signal_count(stream: *const CHspiceStream) -> c_int {
-    if stream.is_null() {
-        return 0;
-    }
-    (*stream).signal_names.len() as c_int
-}
-
-/// Get a signal name by index.
-#[no_mangle]
-pub unsafe extern "C" fn hspice_stream_get_signal_name(
-    stream: *const CHspiceStream,
-    index: c_int,
-) -> *const c_char {
-    if stream.is_null() || index < 0 {
-        return ptr::null();
-    }
-    let stream_ref = &*stream;
-    let idx = index as usize;
-    if idx >= stream_ref.signal_names.len() {
-        return ptr::null();
-    }
-    stream_ref.signal_names[idx].as_ptr()
-}
-
-/// Read the next chunk. Returns 1 if success, 0 if EOF, -1 on error.
-#[no_mangle]
-pub unsafe extern "C" fn hspice_stream_next(stream: *mut CHspiceStream) -> c_int {
+pub unsafe extern "C" fn waveform_stream_next(stream: *mut CWaveformStream) -> c_int {
     if stream.is_null() {
         return -1;
     }
@@ -580,9 +436,8 @@ pub unsafe extern "C" fn hspice_stream_next(stream: *mut CHspiceStream) -> c_int
     }
 }
 
-/// Get the current chunk's point count.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_stream_get_chunk_size(stream: *const CHspiceStream) -> c_int {
+pub unsafe extern "C" fn waveform_stream_get_chunk_size(stream: *const CWaveformStream) -> c_int {
     if stream.is_null() {
         return 0;
     }
@@ -591,43 +446,34 @@ pub unsafe extern "C" fn hspice_stream_get_chunk_size(stream: *const CHspiceStre
             .data
             .values()
             .next()
-            .map(|v| match v {
-                VectorData::Real(d) => d.len() as c_int,
-                VectorData::Complex(d) => d.len() as c_int,
-            })
+            .map(|v| v.len() as c_int)
             .unwrap_or(0),
         None => 0,
     }
 }
 
-/// Get the current chunk's time range start.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_stream_get_time_start(stream: *const CHspiceStream) -> c_double {
-    if stream.is_null() {
-        return 0.0;
+pub unsafe extern "C" fn waveform_stream_get_time_range(
+    stream: *const CWaveformStream,
+    out_start: *mut c_double,
+    out_end: *mut c_double,
+) -> c_int {
+    if stream.is_null() || out_start.is_null() || out_end.is_null() {
+        return -1;
     }
     match &(*stream).current_chunk {
-        Some(chunk) => chunk.time_range.0,
-        None => 0.0,
+        Some(chunk) => {
+            *out_start = chunk.time_range.0;
+            *out_end = chunk.time_range.1;
+            0
+        }
+        None => -1,
     }
 }
 
-/// Get the current chunk's time range end.
 #[no_mangle]
-pub unsafe extern "C" fn hspice_stream_get_time_end(stream: *const CHspiceStream) -> c_double {
-    if stream.is_null() {
-        return 0.0;
-    }
-    match &(*stream).current_chunk {
-        Some(chunk) => chunk.time_range.1,
-        None => 0.0,
-    }
-}
-
-/// Copy signal data from the current chunk into buffer.
-#[no_mangle]
-pub unsafe extern "C" fn hspice_stream_get_signal_data(
-    stream: *const CHspiceStream,
+pub unsafe extern "C" fn waveform_stream_get_signal_data(
+    stream: *const CWaveformStream,
     signal_name: *const c_char,
     out_buffer: *mut c_double,
     max_count: c_int,
@@ -661,4 +507,21 @@ pub unsafe extern "C" fn hspice_stream_get_signal_data(
         }
         None => -1,
     }
+}
+
+// ============================================================================
+// Legacy API aliases
+// ============================================================================
+
+#[no_mangle]
+pub unsafe extern "C" fn hspice_read(
+    filename: *const c_char,
+    debug: c_int,
+) -> *mut CWaveformResult {
+    waveform_read(filename, debug)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hspice_result_free(result: *mut CWaveformResult) {
+    waveform_free(result)
 }

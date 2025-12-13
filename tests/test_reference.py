@@ -10,7 +10,7 @@ import numpy as np
 from pathlib import Path
 
 from tests.conftest import (
-    read_hspice_file,
+    read_waveform,
     get_data_dict,
     load_reference_pickle,
     get_time_key,
@@ -43,7 +43,7 @@ class TestReferenceDataComparison:
         """Test that parsed signal count matches reference data"""
         tr0_path, reference_data, _, _ = reference_testcase
         
-        result = read_hspice_file(tr0_path)
+        result = read_waveform(tr0_path)
         data_dict = get_data_dict(result)
         
         parsed_count = len(data_dict)
@@ -56,7 +56,7 @@ class TestReferenceDataComparison:
         """Test that data length matches reference"""
         tr0_path, reference_data, _, _ = reference_testcase
         
-        result = read_hspice_file(tr0_path)
+        result = read_waveform(tr0_path)
         data_dict = get_data_dict(result)
         
         # Get time/frequency key
@@ -81,7 +81,7 @@ class TestReferenceDataComparison:
         """Test that time/frequency values match reference within tolerance"""
         tr0_path, reference_data, rtol, atol = reference_testcase
         
-        result = read_hspice_file(tr0_path)
+        result = read_waveform(tr0_path)
         data_dict = get_data_dict(result)
         
         # Get time/frequency data
@@ -129,7 +129,7 @@ class TestSpecificFormatReferences:
         if not tr0_path.exists() or not pickle_path.exists():
             pytest.skip("9601 TR test files not found")
         
-        result = read_hspice_file(tr0_path)
+        result = read_waveform(tr0_path)
         data_dict = get_data_dict(result)
         reference = load_reference_pickle(pickle_path)
         
@@ -149,7 +149,7 @@ class TestSpecificFormatReferences:
         if not tr0_path.exists() or not pickle_path.exists():
             pytest.skip("2001 TR test files not found")
         
-        result = read_hspice_file(tr0_path)
+        result = read_waveform(tr0_path)
         data_dict = get_data_dict(result)
         reference = load_reference_pickle(pickle_path)
         
@@ -169,7 +169,7 @@ class TestSpecificFormatReferences:
         if not tr0_path.exists() or not pickle_path.exists():
             pytest.skip("AC test files not found")
         
-        result = read_hspice_file(tr0_path)
+        result = read_waveform(tr0_path)
         data_dict = get_data_dict(result)
         
         # AC should have HERTZ as scale
@@ -186,7 +186,7 @@ class TestSpecificFormatReferences:
         if not tr0_path.exists() or not pickle_path.exists():
             pytest.skip("DC sweep test files not found")
         
-        result = read_hspice_file(tr0_path)
+        result = read_waveform(tr0_path)
         data_dict = get_data_dict(result)
         reference = load_reference_pickle(pickle_path)
         

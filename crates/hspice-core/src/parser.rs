@@ -4,8 +4,8 @@ use crate::reader::MmapReader;
 use crate::types::*;
 use memmap2::Mmap;
 use num_complex::Complex64;
-use std::collections::HashMap;
 use std::fs::File;
+use std::path::Path;
 
 /// Find subsequence in a byte slice
 #[inline]
@@ -41,12 +41,9 @@ fn read_data_blocks(
     version: PostVersion,
     debug: bool,
 ) -> Result<Vec<f64>> {
-    // Item size and capacity estimation divisor per format:
-    // - item_size: bytes per data value (4 for f32, 8 for f64)
-    // - divisor: item_size + 1, accounts for ~20% block header/trailer overhead
     let (item_size, divisor) = match version {
-        PostVersion::V9601 => (4usize, 5), // 4-byte float + 1 for overhead
-        PostVersion::V2001 => (8usize, 9), // 8-byte double + 1 for overhead
+        PostVersion::V9601 => (4usize, 5),
+        PostVersion::V2001 => (8usize, 9),
     };
 
     let estimated_items = reader.remaining() / divisor;
@@ -57,10 +54,8 @@ fn read_data_blocks(
         let (num_items, trailer) = reader.read_block_header(item_size)?;
         num_blocks += 1;
 
-        // Check end marker by peeking at last value before reading into buffer
         let is_end = match version {
             PostVersion::V9601 => {
-                // Use optimized method that converts f32→f64 directly without intermediate Vec
                 reader.read_floats_as_f64_into(num_items, &mut raw_data)?;
                 raw_data
                     .last()
@@ -68,7 +63,6 @@ fn read_data_blocks(
                     .unwrap_or(false)
             }
             PostVersion::V2001 => {
-                // Use optimized method that appends directly
                 reader.read_doubles_into(num_items, &mut raw_data)?;
                 raw_data
                     .last()
@@ -90,11 +84,10 @@ fn read_data_blocks(
             PostVersion::V2001 => "f64",
         };
         eprintln!(
-            "Read {} data blocks ({}), {} total values (capacity: {})",
+            "Read {} data blocks ({}), {} total values",
             num_blocks,
             format_name,
-            raw_data.len(),
-            raw_data.capacity()
+            raw_data.len()
         );
     }
 
@@ -123,7 +116,7 @@ fn extract_int(buf: &[u8], start: usize, end: usize) -> i32 {
 }
 
 // ============================================================================
-// Header parsing - split from hspice_read_impl
+// Header parsing
 // ============================================================================
 
 /// Parsed header metadata
@@ -144,7 +137,7 @@ pub struct HeaderMetadata {
 /// Parse vector names from header buffer
 fn parse_vector_names(buf: &[u8], num_vectors: usize) -> Result<(String, Vec<String>)> {
     if buf.len() < VECTOR_DESCRIPTION_START_POSITION {
-        return Err(HspiceError::ParseError("Buffer too short".into()));
+        return Err(WaveformError::ParseError("Buffer too short".into()));
     }
 
     let desc_section = &buf[VECTOR_DESCRIPTION_START_POSITION..];
@@ -152,7 +145,7 @@ fn parse_vector_names(buf: &[u8], num_vectors: usize) -> Result<(String, Vec<Str
     let tokens: Vec<&str> = desc_str.split_whitespace().collect();
 
     if tokens.len() < num_vectors + 1 {
-        return Err(HspiceError::ParseError("Not enough vector names".into()));
+        return Err(WaveformError::ParseError("Not enough vector names".into()));
     }
 
     let scale_name = tokens.get(num_vectors).unwrap_or(&"time").to_string();
@@ -185,12 +178,11 @@ fn get_sweep_info(buf: &[u8], tokens: &[&str], num_vectors: usize) -> Option<(St
 
 /// Parse all header metadata from buffer
 fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
-    // Check post format version
     let post1 = extract_string(header_buf, POST_START_POSITION1, POST_START_POSITION1 + 4);
     let post2 = extract_string(header_buf, POST_START_POSITION2, POST_START_POSITION2 + 4);
 
     if post1 != POST_STRING11 && post1 != POST_STRING12 && post2 != POST_STRING21 {
-        return Err(HspiceError::FormatError("Unknown post format".into()));
+        return Err(WaveformError::FormatError("Unknown post format".into()));
     }
 
     let post_version = if post2 == POST_STRING21 {
@@ -199,7 +191,6 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
         PostVersion::V9601
     };
 
-    // Extract title and date
     let date = extract_string(header_buf, DATE_START_POSITION, DATE_END_POSITION);
     let title_end = {
         let mut end = DATE_START_POSITION;
@@ -210,14 +201,13 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
     };
     let title = extract_string(header_buf, TITLE_START_POSITION, title_end);
 
-    // Get counts
     let num_sweeps = extract_int(
         header_buf,
         NUM_OF_SWEEPS_POSITION,
         NUM_OF_SWEEPS_END_POSITION,
     );
     if num_sweeps < 0 || num_sweeps > 1 {
-        return Err(HspiceError::FormatError(
+        return Err(WaveformError::FormatError(
             "Only one-dimensional sweep supported".into(),
         ));
     }
@@ -230,7 +220,6 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
     );
     let num_vectors = (num_probes + num_variables) as usize;
 
-    // Get variable type
     let desc_section = &header_buf[VECTOR_DESCRIPTION_START_POSITION..];
     let desc_str = String::from_utf8_lossy(desc_section);
     let tokens: Vec<&str> = desc_str.split_whitespace().collect();
@@ -241,10 +230,8 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
         REAL_VAR
     };
 
-    // Parse vector names
     let (scale_name, names) = parse_vector_names(header_buf, num_vectors)?;
 
-    // Get sweep info
     let (sweep_name, sweep_size) = if num_sweeps == 1 {
         get_sweep_info(header_buf, &tokens, num_vectors)
             .map(|(n, s)| (Some(n), s.max(1)))
@@ -271,19 +258,14 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
 // Data processing
 // ============================================================================
 
-/// Process raw data into result table - OPTIMIZED VERSION
-/// Directly writes to HashMap without intermediate ColumnData allocation
-/// This reduces peak memory by ~30-40% for large files
+/// Process raw data into vectors
 fn process_raw_data(
     raw_data: &[f64],
     num_vectors: usize,
     num_variables: i32,
     var_type: i32,
     has_sweep: bool,
-    names: &[String],
-    scale_name: &str,
-) -> (Option<f64>, HashMap<String, VectorData>) {
-    // Calculate layout
+) -> (Option<f64>, Vec<VectorData>) {
     let num_columns = if var_type == COMPLEX_VAR {
         num_vectors + (num_variables - 1) as usize
     } else {
@@ -295,18 +277,15 @@ fn process_raw_data(
     let data_start = if has_sweep { 1 } else { 0 };
     let sweep_value = if has_sweep { Some(raw_data[0]) } else { None };
 
-    // Pre-allocate HashMap with exact capacity
-    let mut table: HashMap<String, VectorData> = HashMap::with_capacity(names.len() + 1);
+    // Pre-allocate all vectors
+    let mut vectors: Vec<VectorData> = Vec::with_capacity(num_vectors);
 
-    // Initialize all vectors directly in HashMap
     // Scale (always real, first column)
     let mut scale_vec = Vec::with_capacity(num_rows);
 
-    // Other signals - pre-allocate based on type
-    let mut signal_vecs: Vec<SignalBuffer> = names
-        .iter()
-        .enumerate()
-        .map(|(i, _)| {
+    // Signal vectors
+    let mut signal_bufs: Vec<SignalBuffer> = (0..num_vectors - 1)
+        .map(|i| {
             let is_complex = var_type == COMPLEX_VAR && i < (num_variables - 1) as usize;
             if is_complex {
                 SignalBuffer::Complex(Vec::with_capacity(num_rows))
@@ -316,7 +295,7 @@ fn process_raw_data(
         })
         .collect();
 
-    // Single pass through raw data - directly fill vectors
+    // Single pass through raw data
     let mut pos = data_start;
     for _ in 0..num_rows {
         // First column is always scale (real)
@@ -324,7 +303,7 @@ fn process_raw_data(
         pos += 1;
 
         // Remaining columns
-        for (i, buf) in signal_vecs.iter_mut().enumerate() {
+        for (i, buf) in signal_bufs.iter_mut().enumerate() {
             let is_complex_col = var_type == COMPLEX_VAR && i < (num_variables - 1) as usize;
             match buf {
                 SignalBuffer::Complex(vec) if is_complex_col => {
@@ -338,28 +317,26 @@ fn process_raw_data(
                     pos += 1;
                 }
                 _ => {
-                    // Fallback for type mismatch - shouldn't happen
                     pos += 1;
                 }
             }
         }
     }
 
-    // Move vectors into HashMap (zero-copy move)
-    table.insert(scale_name.to_string(), VectorData::Real(scale_vec));
-
-    for (name, buf) in names.iter().zip(signal_vecs.into_iter()) {
+    // Build vectors in order
+    vectors.push(VectorData::Real(scale_vec));
+    for buf in signal_bufs {
         let vector_data = match buf {
             SignalBuffer::Real(vec) => VectorData::Real(vec),
             SignalBuffer::Complex(vec) => VectorData::Complex(vec),
         };
-        table.insert(name.clone(), vector_data);
+        vectors.push(vector_data);
     }
 
-    (sweep_value, table)
+    (sweep_value, vectors)
 }
 
-/// Internal buffer type to avoid ColumnData intermediate struct
+/// Internal buffer type
 enum SignalBuffer {
     Real(Vec<f64>),
     Complex(Vec<Complex64>),
@@ -372,10 +349,10 @@ enum SignalBuffer {
 /// Validate file format before parsing
 fn validate_file_format(mmap: &Mmap) -> Result<()> {
     if mmap.is_empty() {
-        return Err(HspiceError::FormatError("File is empty".into()));
+        return Err(WaveformError::FormatError("File is empty".into()));
     }
     if mmap[0] >= b' ' {
-        return Err(HspiceError::FormatError(
+        return Err(WaveformError::FormatError(
             "File is ASCII format, only binary supported".into(),
         ));
     }
@@ -383,7 +360,6 @@ fn validate_file_format(mmap: &Mmap) -> Result<()> {
 }
 
 /// Parse only the header, return metadata and data start position
-/// Used by streaming API to open file without loading all data
 pub fn parse_header_only(mmap: &Mmap) -> Result<(HeaderMetadata, usize)> {
     validate_file_format(mmap)?;
 
@@ -391,18 +367,25 @@ pub fn parse_header_only(mmap: &Mmap) -> Result<(HeaderMetadata, usize)> {
     let header_buf = read_header_blocks(&mut reader)?;
     let metadata = parse_header_metadata(&header_buf)?;
 
-    // Return current position as data start
     let data_position = mmap.len() - reader.remaining();
     Ok((metadata, data_position))
 }
 
-/// Main HSPICE file reader
-pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<HspiceResult> {
+/// Infer analysis type from filename
+fn infer_analysis_type(filename: &str) -> AnalysisType {
+    Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(AnalysisType::from_extension)
+        .unwrap_or(AnalysisType::Unknown)
+}
+
+/// Main HSPICE file reader - returns WaveformResult
+pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<WaveformResult> {
     if debug > 0 {
-        eprintln!("HSpiceRead: reading file {}", filename);
+        eprintln!("Reading: {}", filename);
     }
 
-    // Memory-map the file
     let file = File::open(filename)?;
     let mmap = unsafe { Mmap::map(&file)? };
 
@@ -418,65 +401,65 @@ pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<HspiceResult> {
 
     let mut reader = MmapReader::new(&mmap);
     let header_buf = read_header_blocks(&mut reader)?;
-
-    if debug > 1 {
-        eprintln!("Header buffer size: {} bytes", header_buf.len());
-    }
-
     let meta = parse_header_metadata(&header_buf)?;
 
     if debug > 0 {
         eprintln!("Post version: {:?}", meta.post_version);
-        eprintln!(
-            "Variables: {}, Vectors: {}",
-            meta.num_variables, meta.num_vectors
-        );
+        eprintln!("Vectors: {}", meta.num_vectors);
         eprintln!("Scale: {}", meta.scale_name);
         if let Some(ref name) = meta.sweep_name {
-            eprintln!("Sweep: {} with {} points", name, meta.sweep_size);
+            eprintln!("Sweep: {} ({} points)", name, meta.sweep_size);
         }
     }
 
-    // Read and process data tables
-    let mut data_tables = Vec::with_capacity(meta.sweep_size as usize);
-    let mut sweep_values = if meta.sweep_name.is_some() {
-        Vec::with_capacity(meta.sweep_size as usize)
+    // Infer analysis type
+    let analysis = if meta.var_type == COMPLEX_VAR {
+        AnalysisType::AC
     } else {
-        Vec::new()
+        let from_scale = AnalysisType::from_scale_name(&meta.scale_name);
+        if from_scale != AnalysisType::Unknown {
+            from_scale
+        } else {
+            infer_analysis_type(filename)
+        }
     };
+
+    // Build variable list
+    let mut variables = Vec::with_capacity(meta.num_vectors);
+    variables.push(Variable::new(&meta.scale_name));
+    for name in &meta.names {
+        variables.push(Variable::new(name));
+    }
+
+    // Read data tables
+    let mut tables = Vec::with_capacity(meta.sweep_size as usize);
 
     for sweep_idx in 0..meta.sweep_size {
         if debug > 1 {
-            eprintln!("Reading sweep point {}/{}", sweep_idx + 1, meta.sweep_size);
+            eprintln!("Reading sweep {}/{}", sweep_idx + 1, meta.sweep_size);
         }
 
         let raw_data = read_data_blocks(&mut reader, meta.post_version, debug > 1)?;
-        let (sweep_val, table) = process_raw_data(
+        let (sweep_value, vectors) = process_raw_data(
             &raw_data,
             meta.num_vectors,
             meta.num_variables,
             meta.var_type,
             meta.sweep_name.is_some(),
-            &meta.names,
-            &meta.scale_name,
         );
 
-        if let Some(val) = sweep_val {
-            sweep_values.push(val);
-        }
-        data_tables.push(table);
+        tables.push(DataTable {
+            sweep_value,
+            vectors,
+        });
     }
 
-    Ok(HspiceResult {
-        sweep_name: meta.sweep_name,
-        sweep_values: if sweep_values.is_empty() {
-            None
-        } else {
-            Some(sweep_values)
-        },
-        data_tables,
-        scale_name: meta.scale_name,
+    Ok(WaveformResult {
         title: meta.title,
         date: meta.date,
+        analysis,
+        variables,
+        sweep_param: meta.sweep_name,
+        tables,
     })
 }

@@ -1,134 +1,142 @@
 # Rust API Documentation
 
-This document covers the Rust API for `hspice-core`, the pure Rust library for parsing HSPICE binary files.
+This document covers the Rust API for `hspice-core`.
 
 ## Installation
-
-Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 hspice-core = { git = "https://github.com/HaiwenZhang/hspice_tr0_parser" }
 ```
 
-Or for local development:
-
-```toml
-[dependencies]
-hspice-core = { path = "path/to/hspice_tr0_parser/crates/hspice-core" }
-```
-
-## Building
-
-```bash
-# Clone the repository
-git clone https://github.com/HaiwenZhang/hspice_tr0_parser.git
-cd hspice_tr0_parser
-
-# Build the core library
-cargo build -p hspice-core --release
-```
-
 ## API Reference
 
 ### Core Functions
 
-#### `read(filename: &str) -> Result<HspiceResult>`
+#### `read(filename: &str) -> Result<WaveformResult>`
 
-Read an HSPICE binary file (.tr0, .ac0, .sw0).
+Read a waveform file.
 
 ```rust
 use hspice_core::read;
 
-fn main() -> hspice_core::Result<()> {
-    let result = read("simulation.tr0")?;
-    println!("Title: {}", result.title);
-    println!("Date: {}", result.date);
-    println!("Scale: {}", result.scale_name);
-    Ok(())
-}
+let result = read("simulation.tr0")?;
+println!("Title: {}", result.title);
+println!("Analysis: {:?}", result.analysis);
 ```
 
-#### `read_debug(filename: &str, debug: i32) -> Result<HspiceResult>`
+#### `read_debug(filename: &str, debug: i32) -> Result<WaveformResult>`
 
 Read with debug output (0=quiet, 1=info, 2=verbose).
 
-```rust
-let result = hspice_core::read_debug("simulation.tr0", 1)?;
-```
-
 #### `read_and_convert(input: &str, output: &str) -> Result<()>`
 
-Convert HSPICE file to SPICE3 binary raw format.
+Convert HSPICE file to SPICE3 raw format.
 
 ```rust
-use hspice_core::read_and_convert;
-
-fn main() -> hspice_core::Result<()> {
-    read_and_convert("input.tr0", "output.raw")?;
-    println!("Conversion complete!");
-    Ok(())
-}
+hspice_core::read_and_convert("input.tr0", "output.raw")?;
 ```
 
 ### Streaming API
 
-For large files, use the streaming API to process data in chunks:
-
 #### `read_stream(path: &str) -> Result<HspiceStreamReader>`
+
+Stream large files in chunks.
 
 ```rust
 use hspice_core::read_stream;
 
-fn main() -> hspice_core::Result<()> {
-    let reader = read_stream("large_file.tr0")?;
-
-    for chunk in reader {
-        let chunk = chunk?;
-        println!("Chunk {}: {} points, time {:.3e} to {:.3e}",
-            chunk.chunk_index,
-            chunk.time.len(),
-            chunk.time_range.0,
-            chunk.time_range.1
-        );
-    }
-    Ok(())
+for chunk in read_stream("large_file.tr0")? {
+    let chunk = chunk?;
+    println!("Chunk {}: {} points", chunk.chunk_index, chunk.time.len());
 }
 ```
 
 #### `read_stream_chunked(path: &str, chunk_size: usize) -> Result<HspiceStreamReader>`
 
-Control the minimum number of time points per chunk:
-
-```rust
-let reader = hspice_core::read_stream_chunked("file.tr0", 50000)?;
-```
+Control minimum points per chunk.
 
 #### `read_stream_signals(path: &str, signals: &[&str], chunk_size: usize) -> Result<HspiceStreamReader>`
 
-Filter to specific signals:
+Filter to specific signals.
 
 ```rust
-let signals = ["TIME", "v(out)", "i(vdd)"];
+let signals = ["TIME", "v(out)"];
 let reader = hspice_core::read_stream_signals("file.tr0", &signals, 10000)?;
 ```
 
-### Data Types
+## Data Types
 
-#### `HspiceResult`
+### `WaveformResult`
+
+Main result structure.
 
 ```rust
-pub struct HspiceResult {
+pub struct WaveformResult {
     pub title: String,
     pub date: String,
-    pub scale_name: String,              // e.g., "TIME", "FREQUENCY"
-    pub sweep_name: Option<String>,      // Sweep parameter name
-    pub sweep_values: Option<Vec<f64>>,  // Sweep values
-    pub data_tables: Vec<HashMap<String, VectorData>>,
+    pub analysis: AnalysisType,
+    pub variables: Vec<Variable>,
+    pub sweep_param: Option<String>,
+    pub tables: Vec<DataTable>,
 }
 ```
 
-#### `VectorData`
+**Methods:**
+
+- `scale_name() -> &str`: Get scale variable name
+- `get(name: &str) -> Option<&VectorData>`: Get signal by name
+- `var_index(name: &str) -> Option<usize>`: Get variable index
+- `var_names() -> Vec<&str>`: Get all variable names
+- `len() -> usize`: Number of data points
+- `num_vars() -> usize`: Number of variables
+- `num_sweeps() -> usize`: Number of sweeps
+- `has_sweep() -> bool`: Check for sweep data
+
+### `AnalysisType`
+
+```rust
+pub enum AnalysisType {
+    Transient,
+    AC,
+    DC,
+    Operating,
+    Noise,
+    Unknown,
+}
+```
+
+### `Variable`
+
+```rust
+pub struct Variable {
+    pub name: String,
+    pub var_type: VarType,
+}
+```
+
+### `VarType`
+
+```rust
+pub enum VarType {
+    Time,
+    Frequency,
+    Voltage,
+    Current,
+    Unknown,
+}
+```
+
+### `DataTable`
+
+```rust
+pub struct DataTable {
+    pub sweep_value: Option<f64>,
+    pub vectors: Vec<VectorData>,
+}
+```
+
+### `VectorData`
 
 ```rust
 pub enum VectorData {
@@ -137,7 +145,7 @@ pub enum VectorData {
 }
 ```
 
-#### `DataChunk` (Streaming)
+### `DataChunk` (Streaming)
 
 ```rust
 pub struct DataChunk {
@@ -148,59 +156,37 @@ pub struct DataChunk {
 }
 ```
 
-### Error Handling
-
-```rust
-pub enum HspiceError {
-    IoError(std::io::Error),
-    ParseError(String),
-    FormatError(String),
-}
-```
-
 ## Complete Example
 
 ```rust
-use hspice_core::{read, VectorData};
-use std::error::Error;
+use hspice_core::{read, VectorData, AnalysisType};
 
-fn main() -> Result<(), Box<dyn Error>> {
-    // Read HSPICE file
-    let result = read("example/PinToPinSim.tr0")?;
+fn main() -> hspice_core::Result<()> {
+    let result = read("simulation.tr0")?;
 
-    println!("=== Simulation Info ===");
     println!("Title: {}", result.title);
     println!("Date: {}", result.date);
-    println!("Scale: {}", result.scale_name);
+    println!("Analysis: {:?}", result.analysis);
+    println!("Scale: {}", result.scale_name());
+    println!("Variables: {}", result.num_vars());
+    println!("Points: {}", result.len());
 
-    // Check for sweep
-    if let Some(ref name) = result.sweep_name {
-        println!("Sweep: {}", name);
-        if let Some(ref values) = result.sweep_values {
-            println!("Sweep values: {:?}", values);
-        }
+    // List variables
+    for var in &result.variables {
+        println!("  {}: {:?}", var.name, var.var_type);
     }
 
-    // Process data tables
-    for (i, table) in result.data_tables.iter().enumerate() {
-        println!("\n=== Table {} ===", i);
-        println!("Signals: {}", table.len());
+    // Access data
+    if let Some(VectorData::Real(time)) = result.get("TIME") {
+        println!("Time range: {:.3e} to {:.3e}",
+            time.first().unwrap(), time.last().unwrap());
+    }
 
-        for (name, data) in table {
-            match data {
-                VectorData::Real(vec) => {
-                    println!("  {}: {} real points", name, vec.len());
-                    if !vec.is_empty() {
-                        println!("    First: {:.6e}, Last: {:.6e}",
-                            vec.first().unwrap(),
-                            vec.last().unwrap()
-                        );
-                    }
-                }
-                VectorData::Complex(vec) => {
-                    println!("  {}: {} complex points", name, vec.len());
-                }
-            }
+    // Check for sweep
+    if result.has_sweep() {
+        println!("Sweep: {:?}", result.sweep_param);
+        for table in &result.tables {
+            println!("  Value: {:?}", table.sweep_value);
         }
     }
 
@@ -210,7 +196,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 ## Supported Formats
 
-| Format | Version   | Precision | Extension        |
+| Format | Version   | Precision | Extensions       |
 | ------ | --------- | --------- | ---------------- |
 | 9601   | 9007/9601 | float32   | .tr0, .ac0, .sw0 |
 | 2001   | 2001      | float64   | .tr0, .ac0, .sw0 |

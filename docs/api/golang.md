@@ -1,296 +1,129 @@
 # Go API Documentation
 
-This document covers using `hspice_tr0_parser` from Go via CGO, leveraging the C FFI bindings.
+This document covers using the HSPICE parser from Go via CGO.
 
-## Prerequisites
-
-- Go 1.18 or later
-- GCC or Clang for CGO
-- Built static library (`libhspicetr0parser.a`)
-
-## Building the Library
+## Building the C Library
 
 ```bash
-# Clone and build
-git clone https://github.com/HaiwenZhang/hspice_tr0_parser.git
-cd hspice_tr0_parser
-
-# Build the static library
 cargo build -p hspice-ffi --release
-
-# Copy artifacts to your Go project
-cp target/release/libhspicetr0parser.a /path/to/your/go/project/
-cp include/hspice_tr0_parser.h /path/to/your/go/project/
+# Output: target/release/libhspicetr0parser.a
 ```
 
 ## Go Wrapper
 
-Create a Go package that wraps the C FFI:
-
-### `hspice/hspice.go`
+Create a Go wrapper that uses CGO:
 
 ```go
 package hspice
 
 /*
-#cgo LDFLAGS: -L${SRCDIR} -lhspicetr0parser -ldl -lm
+#cgo LDFLAGS: -L${SRCDIR}/lib -lhspicetr0parser -lpthread -ldl -lm
 #include "hspice_tr0_parser.h"
 #include <stdlib.h>
 */
 import "C"
 import (
-	"errors"
+	"fmt"
 	"unsafe"
 )
 
-// Result wraps the HSPICE parsing result
-type Result struct {
-	handle *C.CHspiceResult
+// WaveformResult represents parsed waveform data
+type WaveformResult struct {
+	ptr *C.CWaveformResult
 }
 
 // Read parses an HSPICE binary file
-func Read(filename string) (*Result, error) {
+func Read(filename string) (*WaveformResult, error) {
 	cFilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cFilename))
 
-	handle := C.hspice_read(cFilename, 0)
-	if handle == nil {
-		return nil, errors.New("failed to read HSPICE file")
+	result := C.waveform_read(cFilename, 0)
+	if result == nil {
+		return nil, fmt.Errorf("failed to read %s", filename)
 	}
 
-	return &Result{handle: handle}, nil
+	return &WaveformResult{ptr: result}, nil
 }
 
-// ReadDebug parses with debug output
-func ReadDebug(filename string, debug int) (*Result, error) {
-	cFilename := C.CString(filename)
-	defer C.free(unsafe.Pointer(cFilename))
-
-	handle := C.hspice_read(cFilename, C.int(debug))
-	if handle == nil {
-		return nil, errors.New("failed to read HSPICE file")
-	}
-
-	return &Result{handle: handle}, nil
-}
-
-// Close releases the result resources
-func (r *Result) Close() {
-	if r.handle != nil {
-		C.hspice_result_free(r.handle)
-		r.handle = nil
+// Close frees the result
+func (r *WaveformResult) Close() {
+	if r.ptr != nil {
+		C.waveform_free(r.ptr)
+		r.ptr = nil
 	}
 }
 
 // Title returns the simulation title
-func (r *Result) Title() string {
-	return C.GoString(C.hspice_result_get_title(r.handle))
+func (r *WaveformResult) Title() string {
+	return C.GoString(C.waveform_get_title(r.ptr))
 }
 
 // Date returns the simulation date
-func (r *Result) Date() string {
-	return C.GoString(C.hspice_result_get_date(r.handle))
+func (r *WaveformResult) Date() string {
+	return C.GoString(C.waveform_get_date(r.ptr))
 }
 
-// ScaleName returns the scale name (e.g., "TIME", "FREQUENCY")
-func (r *Result) ScaleName() string {
-	return C.GoString(C.hspice_result_get_scale_name(r.handle))
+// ScaleName returns the scale variable name
+func (r *WaveformResult) ScaleName() string {
+	return C.GoString(C.waveform_get_scale_name(r.ptr))
 }
 
-// TableCount returns the number of data tables
-func (r *Result) TableCount() int {
-	return int(C.hspice_result_get_table_count(r.handle))
+// AnalysisType returns the analysis type
+func (r *WaveformResult) AnalysisType() int {
+	return int(C.waveform_get_analysis_type(r.ptr))
 }
 
-// HasSweep checks if the result has sweep data
-func (r *Result) HasSweep() bool {
-	return C.hspice_result_has_sweep(r.handle) != 0
+// VarCount returns the number of variables
+func (r *WaveformResult) VarCount() int {
+	return int(C.waveform_get_var_count(r.ptr))
 }
 
-// SweepName returns the sweep parameter name
-func (r *Result) SweepName() string {
-	ptr := C.hspice_result_get_sweep_name(r.handle)
-	if ptr == nil {
-		return ""
-	}
-	return C.GoString(ptr)
+// PointCount returns the number of data points
+func (r *WaveformResult) PointCount() int {
+	return int(C.waveform_get_point_count(r.ptr))
 }
 
-// SweepValues returns the sweep values
-func (r *Result) SweepValues() []float64 {
-	count := int(C.hspice_result_get_sweep_count(r.handle))
-	if count == 0 {
+// VarName returns the variable name at index
+func (r *WaveformResult) VarName(index int) string {
+	return C.GoString(C.waveform_get_var_name(r.ptr, C.int(index)))
+}
+
+// VarType returns the variable type at index
+func (r *WaveformResult) VarType(index int) int {
+	return int(C.waveform_get_var_type(r.ptr, C.int(index)))
+}
+
+// GetRealData returns real data for a variable
+func (r *WaveformResult) GetRealData(tableIndex, varIndex int) []float64 {
+	length := C.waveform_get_data_length(r.ptr, C.int(tableIndex), C.int(varIndex))
+	if length <= 0 {
 		return nil
 	}
 
-	values := make([]float64, count)
-	C.hspice_result_get_sweep_values(r.handle,
-		(*C.double)(unsafe.Pointer(&values[0])), C.int(count))
-	return values
-}
-
-// SignalCount returns the number of signals in a table
-func (r *Result) SignalCount(tableIndex int) int {
-	return int(C.hspice_result_get_signal_count(r.handle, C.int(tableIndex)))
-}
-
-// SignalLength returns the length of a signal
-func (r *Result) SignalLength(tableIndex int, signalName string) int {
-	cName := C.CString(signalName)
-	defer C.free(unsafe.Pointer(cName))
-	return int(C.hspice_result_get_signal_length(r.handle, C.int(tableIndex), cName))
-}
-
-// IsComplex checks if a signal is complex
-func (r *Result) IsComplex(tableIndex int, signalName string) bool {
-	cName := C.CString(signalName)
-	defer C.free(unsafe.Pointer(cName))
-	return C.hspice_result_signal_is_complex(r.handle, C.int(tableIndex), cName) == 1
-}
-
-// GetSignalReal gets real signal data
-func (r *Result) GetSignalReal(tableIndex int, signalName string) ([]float64, error) {
-	cName := C.CString(signalName)
-	defer C.free(unsafe.Pointer(cName))
-
-	length := r.SignalLength(tableIndex, signalName)
-	if length <= 0 {
-		return nil, errors.New("signal not found or empty")
-	}
-
 	data := make([]float64, length)
-	result := C.hspice_result_get_signal_real(r.handle, C.int(tableIndex), cName,
-		(*C.double)(unsafe.Pointer(&data[0])), C.int(length))
+	C.waveform_get_real_data(r.ptr, C.int(tableIndex), C.int(varIndex),
+		(*C.double)(unsafe.Pointer(&data[0])), length)
 
-	if result < 0 {
-		return nil, errors.New("failed to get signal data")
-	}
-
-	return data, nil
+	return data
 }
 
-// GetSignalComplex gets complex signal data
-func (r *Result) GetSignalComplex(tableIndex int, signalName string) (real, imag []float64, err error) {
-	cName := C.CString(signalName)
-	defer C.free(unsafe.Pointer(cName))
+// Analysis type constants
+const (
+	AnalysisTransient = 0
+	AnalysisAC        = 1
+	AnalysisDC        = 2
+)
 
-	length := r.SignalLength(tableIndex, signalName)
-	if length <= 0 {
-		return nil, nil, errors.New("signal not found or empty")
-	}
-
-	real = make([]float64, length)
-	imag = make([]float64, length)
-
-	result := C.hspice_result_get_signal_complex(r.handle, C.int(tableIndex), cName,
-		(*C.double)(unsafe.Pointer(&real[0])),
-		(*C.double)(unsafe.Pointer(&imag[0])),
-		C.int(length))
-
-	if result < 0 {
-		return nil, nil, errors.New("failed to get complex signal data")
-	}
-
-	return real, imag, nil
-}
+// Variable type constants
+const (
+	VarTime      = 0
+	VarFrequency = 1
+	VarVoltage   = 2
+	VarCurrent   = 3
+)
 ```
 
-### Streaming API
-
-Add streaming support for large files:
-
-```go
-// Stream wraps the streaming reader
-type Stream struct {
-	handle *C.CHspiceStream
-}
-
-// OpenStream opens a file for streaming
-func OpenStream(filename string, chunkSize int) (*Stream, error) {
-	cFilename := C.CString(filename)
-	defer C.free(unsafe.Pointer(cFilename))
-
-	handle := C.hspice_stream_open(cFilename, C.int(chunkSize), 0)
-	if handle == nil {
-		return nil, errors.New("failed to open stream")
-	}
-
-	return &Stream{handle: handle}, nil
-}
-
-// Close releases stream resources
-func (s *Stream) Close() {
-	if s.handle != nil {
-		C.hspice_stream_close(s.handle)
-		s.handle = nil
-	}
-}
-
-// ScaleName returns the scale name
-func (s *Stream) ScaleName() string {
-	return C.GoString(C.hspice_stream_get_scale_name(s.handle))
-}
-
-// SignalCount returns the number of signals
-func (s *Stream) SignalCount() int {
-	return int(C.hspice_stream_get_signal_count(s.handle))
-}
-
-// SignalName returns a signal name by index
-func (s *Stream) SignalName(index int) string {
-	return C.GoString(C.hspice_stream_get_signal_name(s.handle, C.int(index)))
-}
-
-// Next reads the next chunk. Returns false at EOF.
-func (s *Stream) Next() (bool, error) {
-	result := C.hspice_stream_next(s.handle)
-	switch result {
-	case 1:
-		return true, nil
-	case 0:
-		return false, nil
-	default:
-		return false, errors.New("stream read error")
-	}
-}
-
-// ChunkSize returns the current chunk's point count
-func (s *Stream) ChunkSize() int {
-	return int(C.hspice_stream_get_chunk_size(s.handle))
-}
-
-// TimeRange returns the current chunk's time range
-func (s *Stream) TimeRange() (start, end float64) {
-	start = float64(C.hspice_stream_get_time_start(s.handle))
-	end = float64(C.hspice_stream_get_time_end(s.handle))
-	return
-}
-
-// GetChunkData gets signal data from the current chunk
-func (s *Stream) GetChunkData(signalName string) ([]float64, error) {
-	cName := C.CString(signalName)
-	defer C.free(unsafe.Pointer(cName))
-
-	size := s.ChunkSize()
-	if size <= 0 {
-		return nil, errors.New("no data in current chunk")
-	}
-
-	data := make([]float64, size)
-	result := C.hspice_stream_get_signal_data(s.handle, cName,
-		(*C.double)(unsafe.Pointer(&data[0])), C.int(size))
-
-	if result < 0 {
-		return nil, errors.New("failed to get signal data")
-	}
-
-	return data, nil
-}
-```
-
-## Usage Examples
-
-### Basic Reading
+## Usage Example
 
 ```go
 package main
@@ -303,154 +136,52 @@ import (
 )
 
 func main() {
-	// Read HSPICE file
 	result, err := hspice.Read("simulation.tr0")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer result.Close()
 
-	// Print metadata
 	fmt.Printf("Title: %s\n", result.Title())
 	fmt.Printf("Date: %s\n", result.Date())
 	fmt.Printf("Scale: %s\n", result.ScaleName())
-	fmt.Printf("Tables: %d\n", result.TableCount())
+	fmt.Printf("Variables: %d\n", result.VarCount())
+	fmt.Printf("Points: %d\n", result.PointCount())
 
-	// Get TIME data
-	time, err := result.GetSignalReal(0, "TIME")
-	if err != nil {
-		log.Fatal(err)
+	// List variables
+	for i := 0; i < result.VarCount(); i++ {
+		fmt.Printf("  %s (type=%d)\n", result.VarName(i), result.VarType(i))
 	}
 
-	fmt.Printf("Time points: %d\n", len(time))
-	fmt.Printf("Range: %e to %e\n", time[0], time[len(time)-1])
-}
-```
-
-### Processing Signals
-
-```go
-package main
-
-import (
-	"fmt"
-	"log"
-	"math"
-
-	"yourproject/hspice"
-)
-
-func main() {
-	result, err := hspice.Read("simulation.tr0")
-	if err != nil {
-		log.Fatal(err)
+	// Get time data
+	time := result.GetRealData(0, 0)
+	if time != nil {
+		fmt.Printf("Time: %e to %e\n", time[0], time[len(time)-1])
 	}
-	defer result.Close()
-
-	// Get voltage signal
-	vout, err := result.GetSignalReal(0, "v(out)")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Calculate min/max
-	min, max := vout[0], vout[0]
-	for _, v := range vout {
-		if v < min {
-			min = v
-		}
-		if v > max {
-			max = v
-		}
-	}
-
-	fmt.Printf("v(out) range: %.4f V to %.4f V\n", min, max)
-	fmt.Printf("v(out) peak-to-peak: %.4f V\n", max-min)
-}
-```
-
-### Streaming Large Files
-
-```go
-package main
-
-import (
-	"fmt"
-	"log"
-
-	"yourproject/hspice"
-)
-
-func main() {
-	// Open stream with 50000 points per chunk
-	stream, err := hspice.OpenStream("large_simulation.tr0", 50000)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer stream.Close()
-
-	fmt.Printf("Scale: %s\n", stream.ScaleName())
-	fmt.Printf("Signals: %d\n", stream.SignalCount())
-
-	chunkNum := 0
-	totalPoints := 0
-
-	// Process chunks
-	for {
-		hasData, err := stream.Next()
-		if err != nil {
-			log.Fatal(err)
-		}
-		if !hasData {
-			break
-		}
-
-		size := stream.ChunkSize()
-		start, end := stream.TimeRange()
-
-		fmt.Printf("Chunk %d: %d points, time %e to %e\n",
-			chunkNum, size, start, end)
-
-		// Get data from this chunk
-		time, _ := stream.GetChunkData("TIME")
-		vout, _ := stream.GetChunkData("v(out)")
-
-		// Process data...
-		_ = time
-		_ = vout
-
-		totalPoints += size
-		chunkNum++
-	}
-
-	fmt.Printf("\nTotal: %d chunks, %d points\n", chunkNum, totalPoints)
 }
 ```
 
 ## Project Structure
 
 ```
-your-go-project/
-├── go.mod
-├── main.go
+myproject/
 ├── hspice/
-│   ├── hspice.go              # Go wrapper
-│   ├── hspice_tr0_parser.h    # C header (copy from include/)
-│   └── libhspicetr0parser.a   # Static library (copy from target/release/)
+│   ├── hspice.go           # Go wrapper
+│   └── lib/
+│       └── libhspicetr0parser.a
+├── include/
+│   └── hspice_tr0_parser.h
+└── main.go
 ```
 
-## Building Your Go Project
+## Building
 
 ```bash
-# Standard build
-go build
+# Copy library and header
+mkdir -p hspice/lib
+cp target/release/libhspicetr0parser.a hspice/lib/
+cp include/hspice_tr0_parser.h .
 
-# Cross-compile (requires matching Rust target)
-CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build
+# Build Go project
+CGO_ENABLED=1 go build
 ```
-
-## Notes
-
-- CGO adds overhead; for performance-critical applications, consider larger chunk sizes
-- The static library must be compiled for the target platform
-- Memory management is handled automatically via `Close()` methods

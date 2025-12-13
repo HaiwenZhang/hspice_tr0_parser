@@ -1,259 +1,192 @@
 # Python API Documentation
 
-This document covers the Python API for `hspicetr0parser`, providing NumPy-integrated access to HSPICE binary files.
+This document covers the Python API for `hspicetr0parser`.
 
 ## Installation
 
-### From Source
-
 ```bash
-# Clone the repository
 git clone https://github.com/HaiwenZhang/hspice_tr0_parser.git
 cd hspice_tr0_parser
-
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# or: .venv\Scripts\activate  # Windows
-
-# Install build tools and build
 pip install maturin numpy
 maturin develop --release
 ```
 
-### Build Wheel
-
-```bash
-maturin build --release
-pip install target/wheels/hspicetr0parser-*.whl
-```
-
 ## API Reference
 
-### `hspice_tr0_read(filename, debug=0, data_type='numpy')`
+### `read(filename, debug=0)`
 
-Read an HSPICE binary file.
-
-**Parameters:**
-
-- `filename` (str): Path to the HSPICE file
-- `debug` (int): Debug level (0=quiet, 1=info, 2=verbose)
-- `data_type` (str): `'numpy'` for NumPy arrays, `'list'` for Python lists
-
-**Returns:** List containing simulation results
+Read a waveform file and return a `WaveformResult` object.
 
 ```python
-from hspice_tr0_parser import hspice_tr0_read
+from hspice_tr0_parser import read
 
-result = hspice_tr0_read('simulation.tr0')
+result = read('simulation.tr0')
+print(result.title)        # Simulation title
+print(result.date)         # Date string
+print(result.analysis)     # 'transient', 'ac', 'dc', etc.
+print(result.scale_name)   # 'TIME', 'HERTZ', etc.
 ```
 
-### `hspice_tr0_to_raw(input_path, output_path, debug=0)`
+### `convert_to_raw(input_path, output_path, debug=0)`
 
 Convert HSPICE file to SPICE3 binary raw format.
 
-**Parameters:**
-
-- `input_path` (str): Path to input HSPICE file
-- `output_path` (str): Path for output .raw file
-- `debug` (int): Debug level
-
-**Returns:** `True` on success, `False` on failure
-
 ```python
-from hspice_tr0_parser import hspice_tr0_to_raw
+from hspice_tr0_parser import convert_to_raw
 
-success = hspice_tr0_to_raw('simulation.tr0', 'output.raw')
+success = convert_to_raw('simulation.tr0', 'output.raw')
 ```
 
-### `hspice_tr0_stream(filename, chunk_size=10000, signals=None, debug=0)`
+### `stream(filename, chunk_size=10000, signals=None, debug=0)`
 
 Stream large files in chunks for memory efficiency.
 
-**Parameters:**
-
-- `filename` (str): Path to HSPICE file
-- `chunk_size` (int): Minimum points per chunk
-- `signals` (list[str]): Optional signal filter
-- `debug` (int): Debug level
-
-**Returns:** Generator yielding chunk dictionaries
-
 ```python
-from hspice_tr0_parser import hspice_tr0_stream
+from hspice_tr0_parser import stream
 
-for chunk in hspice_tr0_stream('large_file.tr0', chunk_size=50000):
+for chunk in stream('large_file.tr0', chunk_size=50000):
     print(f"Chunk {chunk['chunk_index']}: {chunk['time_range']}")
+    data = chunk['data']  # dict of signal_name -> numpy array
 ```
 
-## Result Structure
+## Classes
 
-The result from `hspice_tr0_read` has the following structure:
+### `WaveformResult`
 
-```python
-[
-    (
-        (sweep_name, sweep_values, [data_dict, ...]),  # Sweep info + data
-        scale_name,        # e.g., "TIME"
-        None,              # Reserved
-        title,             # Simulation title
-        date,              # Date string
-        None               # Reserved
-    )
-]
-```
+Main result class returned by `read()`.
 
-### Accessing Data
+**Attributes:**
 
-```python
-result = hspice_tr0_read('simulation.tr0')
+- `title` (str): Simulation title
+- `date` (str): Simulation date
+- `analysis` (str): Analysis type (`'transient'`, `'ac'`, `'dc'`, `'operating'`, `'noise'`)
+- `scale_name` (str): Scale variable name (`'TIME'`, `'HERTZ'`)
+- `sweep_param` (str | None): Sweep parameter name
+- `variables` (list[Variable]): List of variable definitions
+- `tables` (list[DataTable]): Data tables (one per sweep point)
 
-# Extract components
-sweep_info = result[0][0]
-sweep_name = sweep_info[0]      # Sweep parameter name (or None)
-sweep_values = sweep_info[1]    # Sweep values (or None)
-data_tables = sweep_info[2]     # List of data dictionaries
+**Methods:**
 
-scale_name = result[0][1]       # "TIME", "FREQUENCY", etc.
-title = result[0][3]            # Simulation title
-date = result[0][4]             # Date string
+- `get(name)`: Get signal data by name (returns NumPy array)
+- `var_names()`: Get list of all variable names
+- `num_vars()`: Number of variables
+- `num_sweeps()`: Number of sweep points
+- `has_sweep()`: Whether result has sweep data
+- `__len__()`: Number of data points
 
-# Get first data table
-data = data_tables[0]
+### `Variable`
 
-# Access signals (NumPy arrays)
-time = data['TIME']
-voltage = data['v(out)']
-```
+Variable/signal metadata.
 
-## Complete Examples
+**Attributes:**
+
+- `name` (str): Variable name (e.g., `'TIME'`, `'v(out)'`)
+- `var_type` (str): Variable type (`'time'`, `'voltage'`, `'current'`, `'frequency'`)
+
+### `DataTable`
+
+One data table per sweep point.
+
+**Attributes:**
+
+- `sweep_value` (float | None): Sweep value for this table
+
+**Methods:**
+
+- `get(name)`: Get signal data by name
+- `keys()`: Get list of signal names
+
+## Examples
 
 ### Basic Reading
 
 ```python
-from hspice_tr0_parser import hspice_tr0_read
-import numpy as np
+from hspice_tr0_parser import read
 
-# Read file
-result = hspice_tr0_read('example/PinToPinSim.tr0')
+result = read('simulation.tr0')
 
-# Get data
-data = result[0][0][2][0]
-scale_name = result[0][1]
-title = result[0][3]
+print(f"Title: {result.title}")
+print(f"Analysis: {result.analysis}")
+print(f"Variables: {result.num_vars()}")
+print(f"Points: {len(result)}")
 
-print(f"Title: {title}")
-print(f"Scale: {scale_name}")
-print(f"Signals: {list(data.keys())}")
+# List all variables
+for var in result.variables:
+    print(f"  {var.name}: {var.var_type}")
 
-# Access time and signals
-time = data['TIME']
-print(f"Time range: {time[0]:.3e} to {time[-1]:.3e}")
-print(f"Points: {len(time)}")
+# Get signal data
+time = result.get('TIME')
+vout = result.get('v(out)')
 ```
 
-### Plotting with Matplotlib
+### Plotting
 
 ```python
-from hspice_tr0_parser import hspice_tr0_read
+from hspice_tr0_parser import read
 import matplotlib.pyplot as plt
 
-result = hspice_tr0_read('simulation.tr0')
-data = result[0][0][2][0]
+result = read('simulation.tr0')
+time = result.get('TIME') * 1e9  # Convert to ns
 
-time = data['TIME'] * 1e9  # Convert to nanoseconds
-
-plt.figure(figsize=(12, 6))
-
-# Plot first 5 voltage signals
-for name in list(data.keys())[:6]:
-    if name != 'TIME' and name.startswith('v('):
-        plt.plot(time, data[name], label=name)
+plt.figure(figsize=(10, 6))
+for var in result.variables:
+    if var.var_type == 'voltage' and var.name != 'TIME':
+        plt.plot(time, result.get(var.name), label=var.name)
 
 plt.xlabel('Time (ns)')
 plt.ylabel('Voltage (V)')
-plt.title('HSPICE Transient Simulation')
 plt.legend()
 plt.grid(True)
 plt.show()
 ```
 
-### Processing Large Files
+### Streaming Large Files
 
 ```python
-from hspice_tr0_parser import hspice_tr0_stream
+from hspice_tr0_parser import stream
 import numpy as np
 
-# Process in chunks to save memory
 all_time = []
 all_vout = []
 
-for chunk in hspice_tr0_stream('large_sim.tr0', chunk_size=100000):
-    data = chunk['data']
-    all_time.append(data['TIME'])
-    all_vout.append(data['v(out)'])
+for chunk in stream('large_sim.tr0', chunk_size=100000):
+    all_time.append(chunk['data']['TIME'])
+    all_vout.append(chunk['data']['v(out)'])
 
-# Combine chunks
 time = np.concatenate(all_time)
 vout = np.concatenate(all_vout)
-
 print(f"Total points: {len(time)}")
 ```
 
-### Filtering Signals
+### Working with Sweeps
 
 ```python
-from hspice_tr0_parser import hspice_tr0_stream
+from hspice_tr0_parser import read
 
-# Only load specific signals
-signals = ['TIME', 'v(out)', 'v(in)', 'i(vdd)']
+result = read('sweep.tr0')
 
-for chunk in hspice_tr0_stream('simulation.tr0', signals=signals):
-    data = chunk['data']
-    # Only requested signals are present
-    print(f"Loaded signals: {list(data.keys())}")
+if result.has_sweep():
+    print(f"Sweep parameter: {result.sweep_param}")
+    for i, table in enumerate(result.tables):
+        print(f"  Sweep {i}: {table.sweep_value}")
 ```
 
-### Converting to SPICE3 Raw Format
+### Converting to SPICE3
 
 ```python
-from hspice_tr0_parser import hspice_tr0_to_raw
+from hspice_tr0_parser import convert_to_raw
 
-# Convert for use with ngspice or other tools
-if hspice_tr0_to_raw('hspice_output.tr0', 'ngspice_compatible.raw'):
+if convert_to_raw('hspice.tr0', 'ngspice.raw'):
     print("Conversion successful!")
-else:
-    print("Conversion failed")
-```
-
-### Working with Sweep Data
-
-```python
-from hspice_tr0_parser import hspice_tr0_read
-
-result = hspice_tr0_read('sweep_simulation.tr0')
-
-sweep_name = result[0][0][0]
-sweep_values = result[0][0][1]
-data_tables = result[0][0][2]
-
-if sweep_name:
-    print(f"Sweep parameter: {sweep_name}")
-    print(f"Sweep values: {sweep_values}")
-
-    # Each sweep point has its own data table
-    for i, (val, table) in enumerate(zip(sweep_values, data_tables)):
-        time = table['TIME']
-        print(f"  {sweep_name}={val}: {len(time)} points")
 ```
 
 ## Supported Formats
 
-| Extension | Analysis Type | Data Type |
-| --------- | ------------- | --------- |
-| `.tr0`    | Transient     | Real      |
-| `.ac0`    | AC Analysis   | Complex   |
-| `.sw0`    | DC Sweep      | Real      |
+| Extension | Analysis  | Data Type |
+| --------- | --------- | --------- |
+| `.tr0`    | Transient | Real      |
+| `.ac0`    | AC        | Complex   |
+| `.sw0`    | DC Sweep  | Real      |
 
 ## Requirements
 

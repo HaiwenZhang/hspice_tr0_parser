@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 
 from tests.conftest import (
-    read_hspice_file,
+    read_waveform,
     get_data_dict,
     EXAMPLE_DIR,
     EXAMPLE_TR0,
@@ -19,27 +19,27 @@ class TestStreamingBasic:
 
     def test_import_stream_function(self):
         """Test that streaming function can be imported"""
-        from hspice_tr0_parser import hspice_tr0_stream
-        assert callable(hspice_tr0_stream)
+        from hspice_tr0_parser import stream
+        assert callable(stream)
 
     def test_stream_returns_generator(self):
         """Test that streaming returns a generator"""
-        from hspice_tr0_parser import hspice_tr0_stream
-        result = hspice_tr0_stream(str(EXAMPLE_TR0))
+        from hspice_tr0_parser import stream
+        result = stream(str(EXAMPLE_TR0))
         # Generator should be iterable
         assert hasattr(result, '__iter__')
         assert hasattr(result, '__next__')
 
     def test_stream_yields_chunks(self):
         """Test that streaming yields chunks"""
-        from hspice_tr0_parser import hspice_tr0_stream
-        chunks = list(hspice_tr0_stream(str(EXAMPLE_TR0)))
+        from hspice_tr0_parser import stream
+        chunks = list(stream(str(EXAMPLE_TR0)))
         assert len(chunks) > 0, "Should yield at least one chunk"
 
     def test_chunk_structure(self):
         """Test that chunks have expected structure"""
-        from hspice_tr0_parser import hspice_tr0_stream
-        chunks = list(hspice_tr0_stream(str(EXAMPLE_TR0)))
+        from hspice_tr0_parser import stream
+        chunks = list(stream(str(EXAMPLE_TR0)))
         
         for chunk in chunks:
             assert 'chunk_index' in chunk, "Chunk should have chunk_index"
@@ -59,8 +59,8 @@ class TestStreamingChunkSize:
 
     def test_default_chunk_size(self):
         """Test default chunk size (10000)"""
-        from hspice_tr0_parser import hspice_tr0_stream
-        chunks = list(hspice_tr0_stream(str(EXAMPLE_TR0)))
+        from hspice_tr0_parser import stream
+        chunks = list(stream(str(EXAMPLE_TR0)))
         
         # With small test file, should be 1 chunk if < 10000 points
         # or multiple chunks if larger
@@ -68,19 +68,19 @@ class TestStreamingChunkSize:
 
     def test_custom_chunk_size(self):
         """Test custom chunk size"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
         # Use very small chunk size to force multiple chunks
-        chunks_small = list(hspice_tr0_stream(str(EXAMPLE_TR0), chunk_size=10))
-        chunks_large = list(hspice_tr0_stream(str(EXAMPLE_TR0), chunk_size=100000))
+        chunks_small = list(stream(str(EXAMPLE_TR0), chunk_size=10))
+        chunks_large = list(stream(str(EXAMPLE_TR0), chunk_size=100000))
         
         # Smaller chunk size should produce more chunks
         assert len(chunks_small) >= len(chunks_large)
 
     def test_chunk_index_sequential(self):
         """Test that chunk indices are sequential"""
-        from hspice_tr0_parser import hspice_tr0_stream
-        chunks = list(hspice_tr0_stream(str(EXAMPLE_TR0), chunk_size=100))
+        from hspice_tr0_parser import stream
+        chunks = list(stream(str(EXAMPLE_TR0), chunk_size=100))
         
         for i, chunk in enumerate(chunks):
             assert chunk['chunk_index'] == i, f"Chunk index should be {i}"
@@ -91,18 +91,18 @@ class TestStreamingSignalFilter:
 
     def test_filter_specific_signals(self):
         """Test filtering to specific signals"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
         # First, get all signal names from regular read
-        full_result = read_hspice_file(EXAMPLE_TR0)
-        all_signals = list(get_data_dict(full_result).keys())
+        full_result = read_waveform(EXAMPLE_TR0)
+        all_signals = [v.name for v in full_result.variables]
         
         if len(all_signals) < 3:
             pytest.skip("Need at least 3 signals for filter test")
         
         # Filter to 2 non-scale signals (skip first which is usually scale)
         filter_signals = all_signals[1:3]
-        chunks = list(hspice_tr0_stream(
+        chunks = list(stream(
             str(EXAMPLE_TR0), 
             signals=filter_signals
         ))
@@ -122,16 +122,15 @@ class TestStreamingDataIntegrity:
 
     def test_total_points_match(self):
         """Test that total points match between stream and full read"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
         # Get full data
-        full_result = read_hspice_file(EXAMPLE_TR0)
-        full_data = get_data_dict(full_result)
-        scale_name = list(full_data.keys())[0]  # First key is usually scale
-        total_points_full = len(full_data[scale_name])
+        full_result = read_waveform(EXAMPLE_TR0)
+        scale_name = full_result.scale_name
+        total_points_full = len(full_result)
         
         # Count streamed points
-        chunks = list(hspice_tr0_stream(str(EXAMPLE_TR0), chunk_size=100))
+        chunks = list(stream(str(EXAMPLE_TR0), chunk_size=100))
         total_points_stream = sum(
             len(chunk['data'].get(scale_name, []))
             for chunk in chunks
@@ -142,9 +141,9 @@ class TestStreamingDataIntegrity:
 
     def test_time_range_continuous(self):
         """Test that time ranges are continuous across chunks"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
-        chunks = list(hspice_tr0_stream(str(EXAMPLE_TR0), chunk_size=100))
+        chunks = list(stream(str(EXAMPLE_TR0), chunk_size=100))
         
         if len(chunks) > 1:
             for i in range(len(chunks) - 1):
@@ -157,19 +156,17 @@ class TestStreamingDataIntegrity:
 
     def test_data_values_match(self):
         """Test that data values match between stream and full read"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
         # Get full data
-        full_result = read_hspice_file(EXAMPLE_TR0)
-        full_data = get_data_dict(full_result)
+        full_result = read_waveform(EXAMPLE_TR0)
         
         # Get first signal
-        signal_names = list(full_data.keys())
-        test_signal = signal_names[0]
-        full_values = full_data[test_signal]
+        test_signal = full_result.variables[0].name
+        full_values = full_result.get(test_signal)
         
         # Collect streamed values
-        chunks = list(hspice_tr0_stream(str(EXAMPLE_TR0), chunk_size=100))
+        chunks = list(stream(str(EXAMPLE_TR0), chunk_size=100))
         streamed_values = np.concatenate([
             chunk['data'][test_signal] 
             for chunk in chunks
@@ -193,13 +190,13 @@ class TestStreamingFormats:
     ])
     def test_stream_different_formats(self, filename):
         """Test streaming works with different HSPICE formats"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
         filepath = EXAMPLE_DIR / filename
         if not filepath.exists():
             pytest.skip(f"Test file {filename} not found")
         
-        chunks = list(hspice_tr0_stream(str(filepath)))
+        chunks = list(stream(str(filepath)))
         assert len(chunks) > 0, f"Should stream {filename}"
         
         # Verify chunk structure
@@ -213,17 +210,17 @@ class TestStreamingErrorHandling:
 
     def test_nonexistent_file(self):
         """Test streaming nonexistent file returns empty"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
-        chunks = list(hspice_tr0_stream("/nonexistent/path/file.tr0"))
+        chunks = list(stream("/nonexistent/path/file.tr0"))
         assert len(chunks) == 0, "Nonexistent file should return empty stream"
 
     def test_invalid_chunk_size(self):
         """Test that very small chunk size still works"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
         # Chunk size of 1 should still work
-        chunks = list(hspice_tr0_stream(str(EXAMPLE_TR0), chunk_size=1))
+        chunks = list(stream(str(EXAMPLE_TR0), chunk_size=1))
         assert len(chunks) > 0
 
 
@@ -232,23 +229,23 @@ class TestStreamingMemoryEfficiency:
 
     def test_generator_not_list(self):
         """Test that stream returns a generator, not a pre-computed list"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
-        stream = hspice_tr0_stream(str(EXAMPLE_TR0))
+        result = stream(str(EXAMPLE_TR0))
         
         # Should be a generator type, not a list
-        assert not isinstance(stream, list)
+        assert not isinstance(result, list)
         
         # Should be able to iterate
-        first_chunk = next(stream)
+        first_chunk = next(result)
         assert first_chunk is not None
 
     def test_can_break_early(self):
         """Test that we can break out of streaming early"""
-        from hspice_tr0_parser import hspice_tr0_stream
+        from hspice_tr0_parser import stream
         
         chunks_read = 0
-        for chunk in hspice_tr0_stream(str(EXAMPLE_TR0), chunk_size=10):
+        for chunk in stream(str(EXAMPLE_TR0), chunk_size=10):
             chunks_read += 1
             if chunks_read >= 2:
                 break

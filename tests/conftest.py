@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for HSPICE TR0 parser tests
+Pytest configuration and shared fixtures for waveform parser tests
 """
 
 import pytest
@@ -27,29 +27,12 @@ def example_tr0_path():
 
 
 @pytest.fixture
-def tr0_data(example_tr0_path):
-    """Return parsed TR0 data"""
-    from hspice_tr0_parser import hspice_tr0_read
-    result = hspice_tr0_read(example_tr0_path)
+def waveform_result(example_tr0_path):
+    """Return parsed waveform result"""
+    from hspice_tr0_parser import read
+    result = read(example_tr0_path)
     assert result is not None, "Failed to read TR0 file"
     return result
-
-
-@pytest.fixture
-def tr0_signals(tr0_data):
-    """Return the signal dictionary from TR0 data"""
-    return tr0_data[0][0][2][0]
-
-
-@pytest.fixture
-def tr0_metadata(tr0_data):
-    """Return metadata (title, date, scale_name) from TR0 data"""
-    analysis = tr0_data[0]
-    return {
-        "title": analysis[3],
-        "date": analysis[4],
-        "scale_name": analysis[1]
-    }
 
 
 # =============================================================================
@@ -79,26 +62,37 @@ REFERENCE_DATA_FILES = [
 # Helper functions
 # =============================================================================
 
-def read_hspice_file(filepath, debug=0):
-    """Unified HSPICE file reading interface"""
-    from hspice_tr0_parser import hspice_tr0_read
-    return hspice_tr0_read(str(filepath), debug=debug)
+def read_waveform(filepath, debug=0):
+    """Unified waveform file reading interface"""
+    from hspice_tr0_parser import read
+    return read(str(filepath), debug=debug)
 
 
 def convert_to_raw(input_path, output_path, debug=0):
     """Unified conversion interface"""
-    from hspice_tr0_parser import hspice_tr0_to_raw
-    return hspice_tr0_to_raw(str(input_path), str(output_path), debug=debug)
+    from hspice_tr0_parser import convert_to_raw as convert
+    return convert(str(input_path), str(output_path), debug=debug)
 
 
 def get_data_dict(result):
-    """Extract data dictionary from parse result"""
-    return result[0][0][2][0]
+    """Extract data dictionary from WaveformResult"""
+    if result is None:
+        return {}
+    # Build dict from first table
+    d = {}
+    table = result.tables[0]
+    for var in result.variables:
+        data = result.get(var.name)
+        if data is not None:
+            d[var.name] = data
+    return d
 
 
 def get_scale_name(result):
-    """Extract scale name from parse result"""
-    return result[0][1]
+    """Extract scale name from WaveformResult"""
+    if result is None:
+        return ""
+    return result.scale_name
 
 
 def load_reference_pickle(pickle_path):
@@ -113,7 +107,7 @@ def get_time_key(data_dict):
         if key in data_dict:
             return key
     # Return first key as fallback
-    return list(data_dict.keys())[0]
+    return list(data_dict.keys())[0] if data_dict else None
 
 
 # =============================================================================

@@ -1,6 +1,6 @@
 //! SPICE3 Binary Raw File Writer
 
-use crate::types::{HspiceError, HspiceResult, Result, VectorData};
+use crate::types::{AnalysisType, Result, VectorData, WaveformError, WaveformResult};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
@@ -10,8 +10,7 @@ fn write_raw_header<W: Write>(
     title: &str,
     date: &str,
     plot_name: &str,
-    scale_name: &str,
-    variable_names: &[String],
+    result: &WaveformResult,
     num_points: usize,
     is_complex: bool,
 ) -> Result<()> {
@@ -24,22 +23,20 @@ fn write_raw_header<W: Write>(
         "Flags: {}",
         if is_complex { "complex" } else { "real" }
     )?;
-    writeln!(writer, "No. Variables: {}", variable_names.len() + 1)?; // +1 for scale
+    writeln!(writer, "No. Variables: {}", result.variables.len())?;
     writeln!(writer, "No. Points: {}", num_points)?;
     writeln!(writer, "Variables:")?;
 
-    // Write scale variable (index 0)
-    writeln!(writer, "\t0\t{}\ttime", scale_name)?;
-
-    // Write other variables
-    for (i, name) in variable_names.iter().enumerate() {
-        // Determine variable type from name
-        let var_type = if name.starts_with("i(") || name.starts_with("i_") {
-            "current"
-        } else {
-            "voltage"
+    // Write variables
+    for (i, var) in result.variables.iter().enumerate() {
+        let var_type = match var.var_type {
+            crate::types::VarType::Time => "time",
+            crate::types::VarType::Frequency => "frequency",
+            crate::types::VarType::Voltage => "voltage",
+            crate::types::VarType::Current => "current",
+            crate::types::VarType::Unknown => "unknown",
         };
-        writeln!(writer, "\t{}\t{}\t{}", i + 1, name, var_type)?;
+        writeln!(writer, "\t{}\t{}\t{}", i, var.name, var_type)?;
     }
 
     writeln!(writer, "Binary:")?;
@@ -48,24 +45,26 @@ fn write_raw_header<W: Write>(
 }
 
 /// Write SPICE3 binary data section
-/// Format: For each time point, write time (f64) followed by all signal values (f64)
 fn write_raw_data<W: Write>(
     writer: &mut W,
-    scale_data: &[f64],
-    signal_data: &[Vec<f64>],
+    table: &crate::types::DataTable,
+    num_points: usize,
 ) -> Result<()> {
-    let num_points = scale_data.len();
-
     for i in 0..num_points {
-        // Write time value as f64
-        writer.write_all(&scale_data[i].to_le_bytes())?;
-
-        // Write all signal values as f64 for compatibility
-        for signal in signal_data {
-            if i < signal.len() {
-                writer.write_all(&signal[i].to_le_bytes())?;
-            } else {
-                writer.write_all(&0.0f64.to_le_bytes())?;
+        for vector in &table.vectors {
+            match vector {
+                VectorData::Real(data) => {
+                    let val = data.get(i).copied().unwrap_or(0.0);
+                    writer.write_all(&val.to_le_bytes())?;
+                }
+                VectorData::Complex(data) => {
+                    // For complex, write magnitude
+                    let val = data
+                        .get(i)
+                        .map(|c| (c.re * c.re + c.im * c.im).sqrt())
+                        .unwrap_or(0.0);
+                    writer.write_all(&val.to_le_bytes())?;
+                }
             }
         }
     }
@@ -73,78 +72,40 @@ fn write_raw_data<W: Write>(
     Ok(())
 }
 
-/// Convert HSPICE result to SPICE3 binary raw format
-pub fn write_spice3_raw(result: &HspiceResult, output_path: &str, debug: i32) -> Result<()> {
+/// Convert WaveformResult to SPICE3 binary raw format
+pub fn write_spice3_raw(result: &WaveformResult, output_path: &str, debug: i32) -> Result<()> {
     if debug > 0 {
         eprintln!("Writing SPICE3 raw file: {}", output_path);
     }
 
-    // Get the first data table (handle single sweep for now)
+    // Get the first data table
     let table = result
-        .data_tables
+        .tables
         .first()
-        .ok_or_else(|| HspiceError::ParseError("No data tables found".into()))?;
+        .ok_or_else(|| WaveformError::ParseError("No data tables found".into()))?;
 
-    // Extract scale data
-    let scale_data = match table.get(&result.scale_name) {
-        Some(VectorData::Real(data)) => data,
-        Some(VectorData::Complex(_)) => {
-            return Err(HspiceError::FormatError(
-                "Complex scale not supported".into(),
-            ));
-        }
-        None => {
-            return Err(HspiceError::ParseError("Scale data not found".into()));
-        }
-    };
-
-    let num_points = scale_data.len();
+    let num_points = table.len();
 
     if debug > 0 {
         eprintln!("  Points: {}", num_points);
-        eprintln!("  Variables: {}", table.len());
+        eprintln!("  Variables: {}", result.variables.len());
     }
 
-    // Collect variable names (excluding scale)
-    let mut variable_names: Vec<String> = table
-        .keys()
-        .filter(|k| *k != &result.scale_name)
-        .cloned()
-        .collect();
-    variable_names.sort(); // Consistent ordering
-
-    // Collect signal data in order
-    // TODO: Performance optimization opportunity
-    // - Real data clone can be avoided using Cow<'_, [f64]> references
-    // - Complex data must be converted to magnitude, so clone is necessary
-    // - Current impact: ~2x memory for real signals during write
-    // - Priority: Low (only affects write operation, not parsing)
-    let signal_data: Vec<Vec<f64>> = variable_names
-        .iter()
-        .map(|name| match table.get(name) {
-            Some(VectorData::Real(data)) => data.clone(),
-            Some(VectorData::Complex(data)) => {
-                // For complex, just use magnitude for now
-                data.iter()
-                    .map(|c| (c.re * c.re + c.im * c.im).sqrt())
-                    .collect()
-            }
-            None => vec![0.0; num_points],
-        })
-        .collect();
-
     // Check for complex data
-    let is_complex = table.values().any(|v| matches!(v, VectorData::Complex(_)));
+    let is_complex = table.vectors.iter().any(|v| v.is_complex());
 
     // Create output file
     let file = File::create(output_path)?;
     let mut writer = BufWriter::new(file);
 
-    // Determine plot name based on scale
-    let plot_name = match result.scale_name.to_uppercase().as_str() {
-        "TIME" => "Transient Analysis",
-        "FREQUENCY" | "FREQ" | "HERTZ" => "AC Analysis",
-        _ => "DC Analysis",
+    // Determine plot name based on analysis type
+    let plot_name = match result.analysis {
+        AnalysisType::Transient => "Transient Analysis",
+        AnalysisType::AC => "AC Analysis",
+        AnalysisType::DC => "DC Analysis",
+        AnalysisType::Operating => "Operating Point",
+        AnalysisType::Noise => "Noise Analysis",
+        AnalysisType::Unknown => "Analysis",
     };
 
     // Write header
@@ -153,14 +114,13 @@ pub fn write_spice3_raw(result: &HspiceResult, output_path: &str, debug: i32) ->
         &result.title,
         &result.date,
         plot_name,
-        &result.scale_name,
-        &variable_names,
+        result,
         num_points,
         is_complex,
     )?;
 
     // Write binary data
-    write_raw_data(&mut writer, scale_data, &signal_data)?;
+    write_raw_data(&mut writer, table, num_points)?;
 
     writer.flush()?;
 
@@ -175,10 +135,7 @@ pub fn write_spice3_raw(result: &HspiceResult, output_path: &str, debug: i32) ->
 pub fn hspice_to_raw_impl(input_path: &str, output_path: &str, debug: i32) -> Result<()> {
     use crate::parser::hspice_read_impl;
 
-    // Read HSPICE file
     let result = hspice_read_impl(input_path, debug)?;
-
-    // Write SPICE3 raw file
     write_spice3_raw(&result, output_path, debug)?;
 
     Ok(())

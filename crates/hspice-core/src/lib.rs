@@ -1,6 +1,11 @@
-//! # HSPICE Binary File Reader - Core Library
+//! # Waveform File Reader - Core Library
 //!
-//! A high-performance library for reading HSPICE binary output files (.tr0, .ac0, .sw0).
+//! A high-performance library for reading SPICE waveform files.
+//!
+//! ## Supported Formats
+//!
+//! - HSPICE binary (.tr0, .ac0, .sw0)
+//! - (Future) SPICE3 raw (binary and ASCII)
 //!
 //! ## Features
 //!
@@ -16,14 +21,16 @@
 //!
 //! let result = read("simulation.tr0").unwrap();
 //! println!("Title: {}", result.title);
+//! println!("Analysis: {:?}", result.analysis);
 //!
-//! for table in &result.data_tables {
-//!     for (name, data) in table {
-//!         match data {
-//!             VectorData::Real(vec) => println!("{}: {} points", name, vec.len()),
-//!             VectorData::Complex(vec) => println!("{}: {} complex", name, vec.len()),
-//!         }
-//!     }
+//! // Access by name
+//! if let Some(time) = result.get("TIME") {
+//!     println!("Time points: {}", time.len());
+//! }
+//!
+//! // Access by index (faster)
+//! for (i, var) in result.variables.iter().enumerate() {
+//!     println!("{}: {:?}", var.name, var.var_type);
 //! }
 //! ```
 //!
@@ -35,7 +42,7 @@
 //! let reader = read_stream("large_file.tr0").unwrap();
 //! for chunk in reader {
 //!     let chunk = chunk.unwrap();
-//!     println!("Chunk {}: time {:?}", chunk.chunk_index, chunk.time_range);
+//!     println!("Chunk {}: {:?}", chunk.chunk_index, chunk.time_range);
 //! }
 //! ```
 
@@ -47,12 +54,22 @@ mod writer;
 
 // Re-export public types
 pub use types::{
+    // Core result types
+    AnalysisType,
+    DataTable,
+    // Endianness
     Endian,
+    // Aliases for compatibility
     HspiceError,
     HspiceResult,
     PostVersion,
+    // Error types
     Result,
+    VarType,
+    Variable,
     VectorData,
+    WaveformError,
+    WaveformResult,
     // Constants
     COMPLEX_VAR,
     END_MARKER_2001,
@@ -74,30 +91,36 @@ pub use writer::write_spice3_raw;
 // Public API Functions
 // ============================================================================
 
-/// Read an HSPICE binary file.
+/// Read a waveform file.
 ///
 /// # Arguments
-/// * `filename` - Path to the HSPICE binary file (.tr0, .ac0, .sw0)
+/// * `filename` - Path to the waveform file (.tr0, .ac0, .sw0)
 ///
 /// # Returns
-/// * `Ok(HspiceResult)` - Parsed simulation data
-/// * `Err(HspiceError)` - If file cannot be read or parsed
+/// * `Ok(WaveformResult)` - Parsed simulation data
+/// * `Err(WaveformError)` - If file cannot be read or parsed
 ///
 /// # Example
 /// ```rust,no_run
 /// let result = hspice_core::read("simulation.tr0").unwrap();
 /// println!("Title: {}", result.title);
+/// println!("Scale: {}", result.scale_name());
+///
+/// // Access signal by name
+/// if let Some(vout) = result.get("v(out)") {
+///     println!("v(out): {} points", vout.len());
+/// }
 /// ```
-pub fn read(filename: &str) -> Result<HspiceResult> {
+pub fn read(filename: &str) -> Result<WaveformResult> {
     parser::hspice_read_impl(filename, 0)
 }
 
-/// Read an HSPICE binary file with debug output.
+/// Read a waveform file with debug output.
 ///
 /// # Arguments
-/// * `filename` - Path to the HSPICE binary file
+/// * `filename` - Path to the waveform file
 /// * `debug` - Debug level (0=quiet, 1=info, 2=verbose)
-pub fn read_debug(filename: &str, debug: i32) -> Result<HspiceResult> {
+pub fn read_debug(filename: &str, debug: i32) -> Result<WaveformResult> {
     parser::hspice_read_impl(filename, debug)
 }
 
@@ -109,7 +132,7 @@ pub fn read_debug(filename: &str, debug: i32) -> Result<HspiceResult> {
 ///
 /// # Returns
 /// * `Ok(())` - Conversion successful
-/// * `Err(HspiceError)` - If conversion fails
+/// * `Err(WaveformError)` - If conversion fails
 pub fn read_and_convert(input_path: &str, output_path: &str) -> Result<()> {
     writer::hspice_to_raw_impl(input_path, output_path, 0)
 }
