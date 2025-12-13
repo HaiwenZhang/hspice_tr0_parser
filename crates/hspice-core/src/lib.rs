@@ -35,7 +35,7 @@
 //! let reader = read_stream("large_file.tr0").unwrap();
 //! for chunk in reader {
 //!     let chunk = chunk.unwrap();
-//!     println!("Chunk: {} points", chunk.time.len());
+//!     println!("Chunk {}: time {:?}", chunk.chunk_index, chunk.time_range);
 //! }
 //! ```
 
