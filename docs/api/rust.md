@@ -37,11 +37,27 @@ Convert HSPICE file to SPICE3 raw format.
 hspice_core::read_and_convert("input.tr0", "output.raw")?;
 ```
 
+#### `read_raw(filename: &str) -> Result<WaveformResult>`
+
+Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format).
+
+```rust
+use hspice_core::read_raw;
+
+let result = read_raw("simulation.raw")?;
+println!("Title: {}", result.title);
+println!("Analysis: {:?}", result.analysis);
+```
+
+#### `read_raw_debug(filename: &str, debug: i32) -> Result<WaveformResult>`
+
+Read SPICE3 raw file with debug output.
+
 ### Streaming API
 
 #### `read_stream(path: &str) -> Result<HspiceStreamReader>`
 
-Stream large files in chunks.
+Stream large tr0 files in chunks.
 
 ```rust
 use hspice_core::read_stream;

@@ -5,7 +5,7 @@
 //! ## Supported Formats
 //!
 //! - HSPICE binary (.tr0, .ac0, .sw0)
-//! - (Future) SPICE3 raw (binary and ASCII)
+//! - SPICE3/ngspice raw (binary and ASCII)
 //!
 //! ## Features
 //!
@@ -47,6 +47,7 @@
 //! ```
 
 mod parser;
+mod raw_parser;
 mod reader;
 mod stream;
 mod types;
@@ -144,3 +145,6 @@ pub fn read_and_convert_debug(input_path: &str, output_path: &str, debug: i32) -
 
 // Re-export header parsing for advanced use
 pub use parser::{parse_header_only, HeaderMetadata};
+
+// Re-export SPICE3 raw file reader
+pub use raw_parser::{read_raw, read_raw_debug};

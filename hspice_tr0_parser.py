@@ -5,7 +5,7 @@ Rust implementation with PyO3 by Haiwen Zhang
 
 import hspicetr0parser as _lib
 
-__all__ = ['read', 'convert_to_raw', 'stream', 'WaveformResult', 'Variable', 'DataTable']
+__all__ = ['read', 'read_raw', 'convert_to_raw', 'stream', 'WaveformResult', 'Variable', 'DataTable']
 
 # Re-export classes
 WaveformResult = _lib.WaveformResult
@@ -92,3 +92,32 @@ def stream(filename, chunk_size=10000, signals=None, debug=0):
     chunks = _lib.stream(filename, chunk_size, signals, debug)
     for chunk in chunks:
         yield chunk
+
+
+def read_raw(filename, debug=0):
+    """
+    Read SPICE3/ngspice raw file (auto-detects binary/ASCII format).
+    
+    Args:
+        filename: Path to the raw file (.raw)
+        debug: Debug level (0=quiet, 1=info, 2=verbose)
+    
+    Returns:
+        WaveformResult object with the following attributes:
+        - title: Simulation title
+        - date: Simulation date
+        - analysis: Analysis type ('transient', 'ac', 'dc', etc.)
+        - scale_name: Scale variable name ('time', 'frequency', etc.)
+        - variables: List of Variable objects with name and var_type
+        - tables: List of DataTable objects
+        
+        Returns None if an error occurs.
+    
+    Example:
+        >>> from hspice_tr0_parser import read_raw
+        >>> result = read_raw('simulation.raw')
+        >>> print(result.title)
+        >>> time = result.get('time')
+        >>> vout = result.get('v(out)')
+    """
+    return _lib.read_raw(filename, debug)

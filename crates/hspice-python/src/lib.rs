@@ -318,6 +318,28 @@ pub fn stream(
     Ok(chunks_list.unbind())
 }
 
+/// Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format)
+///
+/// Args:
+///     filename: Path to the raw file (.raw)
+///     debug: Debug level (0=quiet, 1=info, 2=verbose)
+///
+/// Returns:
+///     WaveformResult object or None if failed
+#[pyfunction]
+#[pyo3(signature = (filename, debug=0))]
+pub fn read_raw(_py: Python, filename: &str, debug: i32) -> PyResult<Option<PyWaveformResult>> {
+    match hspice_core::read_raw_debug(filename, debug) {
+        Ok(result) => Ok(Some(result.into())),
+        Err(e) => {
+            if debug > 0 {
+                eprintln!("Read raw error: {:?}", e);
+            }
+            Ok(None)
+        }
+    }
+}
+
 // ============================================================================
 // Module Definition
 // ============================================================================
@@ -326,6 +348,7 @@ pub fn stream(
 pub fn hspicetr0parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Functions
     m.add_function(wrap_pyfunction!(read, m)?)?;
+    m.add_function(wrap_pyfunction!(read_raw, m)?)?;
     m.add_function(wrap_pyfunction!(convert_to_raw, m)?)?;
     m.add_function(wrap_pyfunction!(stream, m)?)?;
 

@@ -4,7 +4,8 @@
 //! from C, C++, and other languages that support C FFI.
 
 use hspice_core::{
-    read_debug, read_stream_chunked, DataChunk, HspiceStreamReader, VectorData, WaveformResult,
+    read_debug, read_raw_debug, read_stream_chunked, DataChunk, HspiceStreamReader, VectorData,
+    WaveformResult,
 };
 use std::ffi::{c_char, c_double, c_int, CStr, CString};
 use std::ptr;
@@ -82,6 +83,55 @@ pub unsafe extern "C" fn waveform_read(
 pub unsafe extern "C" fn waveform_free(result: *mut CWaveformResult) {
     if !result.is_null() {
         drop(Box::from_raw(result));
+    }
+}
+
+/// Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format).
+#[no_mangle]
+pub unsafe extern "C" fn waveform_read_raw(
+    filename: *const c_char,
+    debug: c_int,
+) -> *mut CWaveformResult {
+    if filename.is_null() {
+        return ptr::null_mut();
+    }
+
+    let filename_cstr = match CStr::from_ptr(filename).to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    match read_raw_debug(filename_cstr, debug) {
+        Ok(result) => {
+            let cached_title = CString::new(result.title.clone()).unwrap_or_default();
+            let cached_date = CString::new(result.date.clone()).unwrap_or_default();
+            let cached_scale_name =
+                CString::new(result.scale_name().to_string()).unwrap_or_default();
+            let cached_sweep_param = result
+                .sweep_param
+                .as_ref()
+                .and_then(|s| CString::new(s.clone()).ok());
+            let cached_var_names: Vec<CString> = result
+                .variables
+                .iter()
+                .filter_map(|v| CString::new(v.name.clone()).ok())
+                .collect();
+
+            Box::into_raw(Box::new(CWaveformResult {
+                inner: Box::new(result),
+                cached_title,
+                cached_date,
+                cached_scale_name,
+                cached_sweep_param,
+                cached_var_names,
+            }))
+        }
+        Err(e) => {
+            if debug > 0 {
+                eprintln!("waveform_read_raw error: {:?}", e);
+            }
+            ptr::null_mut()
+        }
     }
 }
 

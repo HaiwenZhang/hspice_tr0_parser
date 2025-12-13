@@ -129,3 +129,20 @@ export function getSignalData(data: Uint8Array, signalName: string): Float64Arra
  * ```
  */
 export default function init(moduleOrPath?: RequestInfo | URL | WebAssembly.Module): Promise<void>;
+
+/**
+ * Parse SPICE3/ngspice raw file data (auto-detects binary/ASCII format).
+ * 
+ * @param data - Raw file content as Uint8Array
+ * @returns Parsed waveform result
+ * @throws Error if parsing fails
+ * 
+ * @example
+ * ```typescript
+ * const rawData = new Uint8Array(await file.arrayBuffer());
+ * const result = parseRaw(rawData);
+ * console.log(result.title);
+ * const time = result.tables[0].signals['time'];
+ * ```
+ */
+export function parseRaw(data: Uint8Array): WaveformResult;

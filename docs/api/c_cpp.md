@@ -19,8 +19,11 @@ Include `include/hspice_tr0_parser.h` in your project.
 ### Result Management
 
 ```c
-// Read a waveform file
+// Read HSPICE waveform file
 CWaveformResult* waveform_read(const char* filename, int debug);
+
+// Read SPICE3/ngspice raw file (auto-detects binary/ASCII)
+CWaveformResult* waveform_read_raw(const char* filename, int debug);
 
 // Free result
 void waveform_free(CWaveformResult* result);

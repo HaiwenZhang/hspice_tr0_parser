@@ -49,6 +49,20 @@ for chunk in stream('large_file.tr0', chunk_size=50000):
     data = chunk['data']  # dict of signal_name -> numpy array
 ```
 
+### `read_raw(filename, debug=0)`
+
+Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format).
+
+```python
+from hspice_tr0_parser import read_raw
+
+result = read_raw('simulation.raw')
+print(result.title)
+print(result.analysis)  # 'transient', 'ac', 'dc'
+time = result.get('time')
+vout = result.get('v(out)')
+```
+
 ## Classes
 
 ### `WaveformResult`

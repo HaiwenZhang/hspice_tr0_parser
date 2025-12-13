@@ -54,8 +54,51 @@ pub fn get_signal_data(data: &[u8], signal_name: &str) -> Result<JsValue, JsValu
 }
 
 // ============================================================================
+// SPICE3 Raw File Parser
+// ============================================================================
+
+/// Parse SPICE3/ngspice raw file data (auto-detects binary/ASCII format)
+///
+/// # Arguments
+/// * `data` - Raw file content as Uint8Array
+///
+/// # Returns
+/// JavaScript object with parsed waveform data
+#[wasm_bindgen(js_name = parseRaw)]
+pub fn parse_raw(data: &[u8]) -> Result<JsValue, JsValue> {
+    let result = parse_raw_from_bytes(data)?;
+    create_js_result(&result)
+}
+
+// ============================================================================
 // Internal Helpers
 // ============================================================================
+
+fn parse_raw_from_bytes(data: &[u8]) -> Result<WaveformResult, JsValue> {
+    // Create temp file for parsing
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join("raw_wasm_temp.raw");
+
+    let mut file = std::fs::File::create(&temp_path)
+        .map_err(|e| JsValue::from_str(&format!("Failed to create temp file: {}", e)))?;
+
+    file.write_all(data)
+        .map_err(|e| JsValue::from_str(&format!("Failed to write data: {}", e)))?;
+
+    drop(file);
+
+    let temp_path_str = temp_path
+        .to_str()
+        .ok_or_else(|| JsValue::from_str("Invalid temp path"))?;
+
+    let result = hspice_core::read_raw(temp_path_str)
+        .map_err(|e| JsValue::from_str(&format!("Parse raw error: {:?}", e)))?;
+
+    // Cleanup
+    let _ = std::fs::remove_file(&temp_path);
+
+    Ok(result)
+}
 
 fn parse_from_bytes(data: &[u8]) -> Result<WaveformResult, JsValue> {
     // Create temp file for parsing (WASM can't access filesystem)

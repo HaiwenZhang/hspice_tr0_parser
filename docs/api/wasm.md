@@ -74,6 +74,19 @@ const time = getSignalData(fileData, "TIME");
 const vout = getSignalData(fileData, "v(out)");
 ```
 
+### `parseRaw(data: Uint8Array): WaveformResult`
+
+Parse SPICE3/ngspice raw file (auto-detects binary/ASCII format).
+
+```typescript
+import { parseRaw } from "hspice-wasm";
+
+const rawData = new Uint8Array(await file.arrayBuffer());
+const result = parseRaw(rawData);
+console.log(result.title);
+const time = result.tables[0].signals["time"];
+```
+
 ## Types
 
 ### `WaveformResult`

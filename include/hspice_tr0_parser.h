@@ -82,9 +82,20 @@ typedef struct CWaveformStream CWaveformStream;
 CWaveformResult *waveform_read(const char *filename, int debug);
 
 /**
+ * Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format).
+ *
+ * @param filename Path to the raw file (.raw)
+ * @param debug    Debug level (0=quiet, 1=info, 2=verbose)
+ * @return         Pointer to result on success, NULL on error
+ *
+ * @note The caller must free the result using waveform_free().
+ */
+CWaveformResult *waveform_read_raw(const char *filename, int debug);
+
+/**
  * Free a waveform result handle.
  *
- * @param result Pointer returned by waveform_read()
+ * @param result Pointer returned by waveform_read() or waveform_read_raw()
  */
 void waveform_free(CWaveformResult *result);
 

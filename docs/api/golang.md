@@ -45,6 +45,19 @@ func Read(filename string) (*WaveformResult, error) {
 	return &WaveformResult{ptr: result}, nil
 }
 
+// ReadRaw parses a SPICE3/ngspice raw file (auto-detects binary/ASCII)
+func ReadRaw(filename string) (*WaveformResult, error) {
+	cFilename := C.CString(filename)
+	defer C.free(unsafe.Pointer(cFilename))
+
+	result := C.waveform_read_raw(cFilename, 0)
+	if result == nil {
+		return nil, fmt.Errorf("failed to read raw file %s", filename)
+	}
+
+	return &WaveformResult{ptr: result}, nil
+}
+
 // Close frees the result
 func (r *WaveformResult) Close() {
 	if r.ptr != nil {
