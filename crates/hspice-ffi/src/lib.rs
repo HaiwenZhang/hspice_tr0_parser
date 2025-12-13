@@ -8,8 +8,9 @@
 //! All functions in this module are marked as `unsafe` and require
 //! careful handling of pointers for memory safety.
 
-use crate::parser::hspice_read_impl;
-use crate::types::{HspiceResult, VectorData};
+use hspice_core::{
+    read_debug, read_stream_chunked, DataChunk, HspiceResult, HspiceStreamReader, VectorData,
+};
 use std::ffi::{c_char, c_double, c_int, CStr, CString};
 use std::ptr;
 
@@ -69,7 +70,7 @@ pub unsafe extern "C" fn hspice_read(filename: *const c_char, debug: c_int) -> *
         Err(_) => return ptr::null_mut(),
     };
 
-    match hspice_read_impl(filename_cstr, debug) {
+    match read_debug(filename_cstr, debug) {
         Ok(result) => {
             // Cache CStrings for safe pointer returns
             let cached_title = CString::new(result.title.clone()).unwrap_or_default();
@@ -458,8 +459,6 @@ pub unsafe extern "C" fn hspice_result_get_signal_complex(
 // Streaming API for C
 // ============================================================================
 
-use crate::stream::{DataChunk, HspiceStreamReader};
-
 /// Opaque handle to streaming reader
 #[repr(C)]
 pub struct CHspiceStream {
@@ -492,7 +491,7 @@ pub unsafe extern "C" fn hspice_stream_open(
         );
     }
 
-    let reader = match crate::stream::read_stream_chunked(filename_str, chunk_size as usize) {
+    let reader = match read_stream_chunked(filename_str, chunk_size as usize) {
         Ok(r) => r,
         Err(e) => {
             if debug > 0 {

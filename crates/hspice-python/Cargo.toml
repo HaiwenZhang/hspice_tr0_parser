@@ -1,0 +1,16 @@
+[package]
+name = "hspice-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python bindings for HSPICE binary file parser"
+
+[lib]
+name = "hspicetr0parser"
+crate-type = ["cdylib"]
+
+[dependencies]
+hspice-core.workspace = true
+pyo3.workspace = true
+numpy.workspace = true

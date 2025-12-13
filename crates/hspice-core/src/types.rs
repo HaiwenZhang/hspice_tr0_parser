@@ -3,9 +3,6 @@
 use num_complex::Complex64;
 use std::collections::HashMap;
 
-#[cfg(feature = "python")]
-use pyo3;
-
 // ============================================================================
 // Constants
 // ============================================================================
@@ -76,20 +73,28 @@ pub enum HspiceError {
     FormatError(String),
 }
 
-impl From<std::io::Error> for HspiceError {
-    fn from(e: std::io::Error) -> Self {
-        HspiceError::IoError(e)
+impl std::fmt::Display for HspiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HspiceError::IoError(e) => write!(f, "IO error: {}", e),
+            HspiceError::ParseError(s) => write!(f, "Parse error: {}", s),
+            HspiceError::FormatError(s) => write!(f, "Format error: {}", s),
+        }
     }
 }
 
-#[cfg(feature = "python")]
-impl From<HspiceError> for pyo3::PyErr {
-    fn from(e: HspiceError) -> pyo3::PyErr {
-        match e {
-            HspiceError::IoError(e) => pyo3::exceptions::PyIOError::new_err(e.to_string()),
-            HspiceError::ParseError(s) => pyo3::exceptions::PyValueError::new_err(s),
-            HspiceError::FormatError(s) => pyo3::exceptions::PyValueError::new_err(s),
+impl std::error::Error for HspiceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HspiceError::IoError(e) => Some(e),
+            _ => None,
         }
+    }
+}
+
+impl From<std::io::Error> for HspiceError {
+    fn from(e: std::io::Error) -> Self {
+        HspiceError::IoError(e)
     }
 }
 
