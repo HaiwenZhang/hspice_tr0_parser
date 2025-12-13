@@ -5,9 +5,10 @@
 [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
 [![C API](https://img.shields.io/badge/C_API-Available-blue.svg)](docs/api/c_cpp.md)
 [![Go](https://img.shields.io/badge/Go-CGO-00ADD8.svg)](docs/api/golang.md)
+[![Java](https://img.shields.io/badge/Java-JNA-red.svg)](docs/api/java.md)
 [![WASM](https://img.shields.io/badge/WASM-Browser-purple.svg)](docs/api/wasm.md)
 
-High-performance HSPICE binary file and SPICE3 raw file parser with **Python**, **Rust**, **C/C++**, **Go**, and **WebAssembly** APIs.
+High-performance HSPICE binary file and SPICE3 raw file parser with **Python**, **Rust**, **C/C++**, **Go**, **Java**, and **WebAssembly** APIs.
 
 ## Features
 
@@ -33,6 +34,7 @@ High-performance HSPICE binary file and SPICE3 raw file parser with **Python**, 
 | **Rust**   | [docs/api/rust.md](docs/api/rust.md)     |
 | **C/C++**  | [docs/api/c_cpp.md](docs/api/c_cpp.md)   |
 | **Go**     | [docs/api/golang.md](docs/api/golang.md) |
+| **Java**   | [docs/api/java.md](docs/api/java.md)     |
 | **WASM**   | [docs/api/wasm.md](docs/api/wasm.md)     |
 
 ## Project Structure
