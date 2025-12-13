@@ -311,12 +311,13 @@ fn parse_complex_value(s: &str) -> (f64, f64) {
 
 fn infer_analysis_type(plotname: &str) -> AnalysisType {
     let lower = plotname.to_lowercase();
-    if lower.contains("transient") || lower.contains("tran") {
+    // Check DC before transient to avoid "tran" matching "characteristic"
+    if lower.contains("dc") {
+        AnalysisType::DC
+    } else if lower.contains("transient") || lower.contains("tran") {
         AnalysisType::Transient
     } else if lower.contains("ac") {
         AnalysisType::AC
-    } else if lower.contains("dc") {
-        AnalysisType::DC
     } else if lower.contains("operating") || lower.contains("op") {
         AnalysisType::Operating
     } else if lower.contains("noise") {
