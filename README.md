@@ -5,8 +5,9 @@
 [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
 [![C API](https://img.shields.io/badge/C_API-Available-blue.svg)](docs/api/c_cpp.md)
 [![Go](https://img.shields.io/badge/Go-CGO-00ADD8.svg)](docs/api/golang.md)
+[![WASM](https://img.shields.io/badge/WASM-Browser-purple.svg)](docs/api/wasm.md)
 
-High-performance HSPICE binary file parser with **Python**, **Rust**, **C**, and **Go** APIs.
+High-performance HSPICE binary file parser with **Python**, **Rust**, **C**, **Go**, and **WASM** APIs.
 
 ## Overview
 
@@ -18,6 +19,7 @@ A pure Rust implementation for reading HSPICE binary output files (.tr0, .ac0, .
 | **Rust**   | ✅     | [docs/api/rust.md](docs/api/rust.md)     |
 | **C/C++**  | ✅     | [docs/api/c_cpp.md](docs/api/c_cpp.md)   |
 | **Go**     | ✅     | [docs/api/golang.md](docs/api/golang.md) |
+| **WASM**   | ✅     | [docs/api/wasm.md](docs/api/wasm.md)     |
 
 ## Supported Formats
 
@@ -82,7 +84,7 @@ hspice_result_free(result);
 
 | Document                             | Description                  |
 | ------------------------------------ | ---------------------------- |
-| [Architecture](docs/architecture.md) | Multi-crate workspace design |
+| [Architecture](docs/ARCHITECTURE.md) | Multi-crate workspace design |
 | [Python API](docs/api/python.md)     | Full Python API reference    |
 | [Rust API](docs/api/rust.md)         | Full Rust API reference      |
 | [C/C++ API](docs/api/c_cpp.md)       | Full C FFI reference         |

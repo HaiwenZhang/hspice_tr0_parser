@@ -1,0 +1,20 @@
+[package]
+name = "hspice-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebAssembly bindings for HSPICE binary file parser"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hspice-core.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+serde.workspace = true
+serde-wasm-bindgen.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
