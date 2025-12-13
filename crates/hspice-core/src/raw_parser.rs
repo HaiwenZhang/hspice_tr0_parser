@@ -166,10 +166,17 @@ fn parse_binary_data<R: Read>(
         let mut vectors: Vec<Vec<Complex64>> = vec![Vec::with_capacity(num_points); num_vars];
 
         for _point in 0..num_points {
-            for var_idx in 0..num_vars {
+            // Read all complex values for the current point
+            let mut current_point_values = Vec::with_capacity(num_vars);
+            for _ in 0..num_vars {
                 let re = reader.read_f64::<LittleEndian>()?;
                 let im = reader.read_f64::<LittleEndian>()?;
-                vectors[var_idx].push(Complex64::new(re, im));
+                current_point_values.push(Complex64::new(re, im));
+            }
+
+            // Distribute values to the respective vectors using a zipped iterator
+            for (vec, val) in vectors.iter_mut().zip(current_point_values.into_iter()) {
+                vec.push(val);
             }
         }
 
@@ -180,9 +187,16 @@ fn parse_binary_data<R: Read>(
         let mut vectors: Vec<Vec<f64>> = vec![Vec::with_capacity(num_points); num_vars];
 
         for _point in 0..num_points {
-            for var_idx in 0..num_vars {
+            // Read all real values for the current point
+            let mut current_point_values = Vec::with_capacity(num_vars);
+            for _ in 0..num_vars {
                 let value = reader.read_f64::<LittleEndian>()?;
-                vectors[var_idx].push(value);
+                current_point_values.push(value);
+            }
+
+            // Distribute values to the respective vectors using a zipped iterator
+            for (vec, val) in vectors.iter_mut().zip(current_point_values.into_iter()) {
+                vec.push(val);
             }
         }
 

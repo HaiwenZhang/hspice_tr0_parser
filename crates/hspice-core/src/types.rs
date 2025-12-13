@@ -32,6 +32,7 @@ pub const COMPLEX_VAR: i32 = 1;
 pub const REAL_VAR: i32 = 0;
 
 /// End-of-data marker for 9601 format (float32 representation of ~1e30)
+#[allow(clippy::excessive_precision)]
 pub const END_MARKER_9601: f32 = 1.0000000150474662e+30_f32;
 /// End-of-data marker for 2001 format
 pub const END_MARKER_2001: f64 = 1.0e+30_f64;

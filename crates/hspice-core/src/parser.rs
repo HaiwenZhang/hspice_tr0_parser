@@ -206,7 +206,7 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
         NUM_OF_SWEEPS_POSITION,
         NUM_OF_SWEEPS_END_POSITION,
     );
-    if num_sweeps < 0 || num_sweeps > 1 {
+    if !(0..=1).contains(&num_sweeps) {
         return Err(WaveformError::FormatError(
             "Only one-dimensional sweep supported".into(),
         ));
