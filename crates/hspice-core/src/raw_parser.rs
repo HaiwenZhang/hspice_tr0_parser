@@ -28,7 +28,6 @@ struct RawHeader {
     num_points: usize,
     variables: Vec<(String, String)>, // (name, type)
     is_complex: bool,
-    is_real: bool,
 }
 
 /// Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format)
@@ -88,7 +87,6 @@ fn parse_header<R: BufRead + Seek>(
     _debug: i32,
 ) -> Result<(RawHeader, RawFormat, u64)> {
     let mut header = RawHeader::default();
-    let mut format = RawFormat::Ascii;
     let mut line = String::new();
     let mut in_variables = false;
     let mut var_count = 0;
@@ -104,14 +102,12 @@ fn parse_header<R: BufRead + Seek>(
 
         // Check for data section markers
         if trimmed == "Binary:" {
-            format = RawFormat::Binary;
             let pos = reader.stream_position()?;
-            return Ok((header, format, pos));
+            return Ok((header, RawFormat::Binary, pos));
         }
         if trimmed == "Values:" {
-            format = RawFormat::Ascii;
             let pos = reader.stream_position()?;
-            return Ok((header, format, pos));
+            return Ok((header, RawFormat::Ascii, pos));
         }
 
         // Parse header fields
@@ -127,7 +123,6 @@ fn parse_header<R: BufRead + Seek>(
         } else if let Some(value) = trimmed.strip_prefix("Flags:") {
             header.flags = value.split_whitespace().map(|s| s.to_string()).collect();
             header.is_complex = header.flags.iter().any(|f| f == "complex");
-            header.is_real = header.flags.iter().any(|f| f == "real");
             in_variables = false;
         } else if let Some(value) = trimmed.strip_prefix("No. Variables:") {
             header.num_variables = value.trim().parse().unwrap_or(0);
