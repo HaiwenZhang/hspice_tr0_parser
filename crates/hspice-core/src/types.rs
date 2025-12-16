@@ -255,36 +255,19 @@ impl VectorData {
 // ============================================================================
 
 /// Error type for waveform reading operations
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum WaveformError {
-    IoError(std::io::Error),
+    /// I/O error (file not found, permission denied, etc.)
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    /// Parse error (invalid data format, unexpected values)
+    #[error("Parse error: {0}")]
     ParseError(String),
+
+    /// Format error (unsupported file format, version mismatch)
+    #[error("Format error: {0}")]
     FormatError(String),
-}
-
-impl std::fmt::Display for WaveformError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            WaveformError::IoError(e) => write!(f, "IO error: {}", e),
-            WaveformError::ParseError(s) => write!(f, "Parse error: {}", s),
-            WaveformError::FormatError(s) => write!(f, "Format error: {}", s),
-        }
-    }
-}
-
-impl std::error::Error for WaveformError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            WaveformError::IoError(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for WaveformError {
-    fn from(e: std::io::Error) -> Self {
-        WaveformError::IoError(e)
-    }
 }
 
 pub type Result<T> = std::result::Result<T, WaveformError>;
