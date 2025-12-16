@@ -2,7 +2,7 @@
 //!
 //! This crate provides PyO3 bindings to expose hspice-core to Python.
 
-use hspice_core::{self, AnalysisType, DataTable, VarType, Variable, VectorData, WaveformResult};
+use hspice_core::{self, DataTable, Variable, VectorData, WaveformResult};
 use numpy::ndarray::Array1;
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
@@ -31,16 +31,9 @@ impl PyVariable {
 
 impl From<&Variable> for PyVariable {
     fn from(v: &Variable) -> Self {
-        let var_type = match v.var_type {
-            VarType::Time => "time",
-            VarType::Frequency => "frequency",
-            VarType::Voltage => "voltage",
-            VarType::Current => "current",
-            VarType::Unknown => "unknown",
-        };
         PyVariable {
             name: v.name.clone(),
-            var_type: var_type.to_string(),
+            var_type: v.var_type.to_string(),
         }
     }
 }
@@ -166,19 +159,13 @@ impl PyWaveformResult {
 
 impl From<WaveformResult> for PyWaveformResult {
     fn from(r: WaveformResult) -> Self {
-        let analysis = match r.analysis {
-            AnalysisType::Transient => "transient",
-            AnalysisType::AC => "ac",
-            AnalysisType::DC => "dc",
-            AnalysisType::Operating => "operating",
-            AnalysisType::Noise => "noise",
-            AnalysisType::Unknown => "unknown",
-        };
+        // Compute values that depend on &self before move
+        let analysis = r.analysis.to_string();
         let scale_name = r.scale_name().to_string();
         PyWaveformResult {
             title: r.title,
             date: r.date,
-            analysis: analysis.to_string(),
+            analysis,
             scale_name,
             sweep_param: r.sweep_param,
             variables: r.variables,

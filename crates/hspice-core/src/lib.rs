@@ -46,6 +46,7 @@
 //! }
 //! ```
 
+mod block_reader;
 mod parser;
 mod raw_parser;
 mod reader;

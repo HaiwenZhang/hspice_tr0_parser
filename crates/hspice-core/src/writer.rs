@@ -29,14 +29,7 @@ fn write_raw_header<W: Write>(
 
     // Write variables
     for (i, var) in result.variables.iter().enumerate() {
-        let var_type = match var.var_type {
-            crate::types::VarType::Time => "time",
-            crate::types::VarType::Frequency => "frequency",
-            crate::types::VarType::Voltage => "voltage",
-            crate::types::VarType::Current => "current",
-            crate::types::VarType::Unknown => "unknown",
-        };
-        writeln!(writer, "\t{}\t{}\t{}", i, var.name, var_type)?;
+        writeln!(writer, "\t{}\t{}\t{}", i, var.name, var.var_type)?;
     }
 
     writeln!(writer, "Binary:")?;

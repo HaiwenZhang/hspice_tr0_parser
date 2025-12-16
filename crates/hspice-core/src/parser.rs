@@ -41,52 +41,20 @@ fn read_data_blocks(
     version: PostVersion,
     debug: bool,
 ) -> Result<Vec<f64>> {
-    let (item_size, divisor) = match version {
-        PostVersion::V9601 => (4usize, 5),
-        PostVersion::V2001 => (8usize, 9),
-    };
+    use crate::block_reader::BlockReader;
 
-    let estimated_items = reader.remaining() / divisor;
-    let mut raw_data = Vec::with_capacity(estimated_items);
-    let mut num_blocks = 0usize;
+    // Get remaining bytes for BlockReader
+    let remaining = reader.remaining();
+    let data_slice = &reader.read_bytes(remaining)?;
 
-    loop {
-        let (num_items, trailer) = reader.read_block_header(item_size)?;
-        num_blocks += 1;
-
-        let is_end = match version {
-            PostVersion::V9601 => {
-                reader.read_floats_as_f64_into(num_items, &mut raw_data)?;
-                raw_data
-                    .last()
-                    .map(|&v| v as f32 >= END_MARKER_9601)
-                    .unwrap_or(false)
-            }
-            PostVersion::V2001 => {
-                reader.read_doubles_into(num_items, &mut raw_data)?;
-                raw_data
-                    .last()
-                    .map(|&v| v >= END_MARKER_2001)
-                    .unwrap_or(false)
-            }
-        };
-
-        reader.read_block_trailer(trailer)?;
-
-        if is_end {
-            break;
-        }
-    }
+    let mut block_reader = BlockReader::new(data_slice, version);
+    let raw_data = block_reader.read_all()?;
 
     if debug {
-        let format_name = match version {
-            PostVersion::V9601 => "f32",
-            PostVersion::V2001 => "f64",
-        };
         eprintln!(
             "Read {} data blocks ({}), {} total values",
-            num_blocks,
-            format_name,
+            block_reader.block_count(),
+            block_reader.format_name(),
             raw_data.len()
         );
     }

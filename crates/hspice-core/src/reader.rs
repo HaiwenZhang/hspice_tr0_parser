@@ -23,6 +23,12 @@ impl<'a> MmapReader<'a> {
         self.data.len().saturating_sub(self.pos)
     }
 
+    /// Get current read position
+    #[inline]
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
     #[inline]
     pub fn read_bytes(&mut self, count: usize) -> Result<&'a [u8]> {
         if self.pos + count > self.data.len() {
@@ -76,20 +82,12 @@ impl<'a> MmapReader<'a> {
 
         self.endian = Some(endian);
 
-        let trailer_value = match endian {
-            Endian::Little => i32::from_le_bytes([
-                header_bytes[12],
-                header_bytes[13],
-                header_bytes[14],
-                header_bytes[15],
-            ]),
-            Endian::Big => i32::from_be_bytes([
-                header_bytes[12],
-                header_bytes[13],
-                header_bytes[14],
-                header_bytes[15],
-            ]),
-        };
+        let trailer_value = endian.read_i32([
+            header_bytes[12],
+            header_bytes[13],
+            header_bytes[14],
+            header_bytes[15],
+        ]);
 
         let num_items = (trailer_value as usize) / item_size;
         Ok((num_items, trailer_value))
@@ -98,20 +96,13 @@ impl<'a> MmapReader<'a> {
     /// Read block trailer and verify
     pub fn read_block_trailer(&mut self, expected: i32) -> Result<()> {
         let trailer_bytes = self.read_bytes(4)?;
-        let trailer = match self.endian.unwrap_or(Endian::Little) {
-            Endian::Little => i32::from_le_bytes([
-                trailer_bytes[0],
-                trailer_bytes[1],
-                trailer_bytes[2],
-                trailer_bytes[3],
-            ]),
-            Endian::Big => i32::from_be_bytes([
-                trailer_bytes[0],
-                trailer_bytes[1],
-                trailer_bytes[2],
-                trailer_bytes[3],
-            ]),
-        };
+        let endian = self.endian.unwrap_or(Endian::Little);
+        let trailer = endian.read_i32([
+            trailer_bytes[0],
+            trailer_bytes[1],
+            trailer_bytes[2],
+            trailer_bytes[3],
+        ]);
 
         if trailer != expected {
             return Err(HspiceError::FormatError(
@@ -129,33 +120,22 @@ impl<'a> MmapReader<'a> {
         let bytes = self.read_bytes(byte_count)?;
 
         target.reserve(count);
-        let is_little = matches!(self.endian.unwrap_or(Endian::Little), Endian::Little);
+        let endian = self.endian.unwrap_or(Endian::Little);
 
         // Process 2 values at a time for better pipelining
         let chunks = bytes.chunks_exact(8);
         let remainder = chunks.remainder();
 
         for chunk in chunks {
-            if is_little {
-                let v1 = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                let v2 = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-                target.push(v1 as f64);
-                target.push(v2 as f64);
-            } else {
-                let v1 = f32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                let v2 = f32::from_be_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-                target.push(v1 as f64);
-                target.push(v2 as f64);
-            }
+            let v1 = endian.read_f32([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            let v2 = endian.read_f32([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            target.push(v1 as f64);
+            target.push(v2 as f64);
         }
 
         // Handle remaining bytes (0 or 4 bytes)
         if remainder.len() >= 4 {
-            let v = if is_little {
-                f32::from_le_bytes([remainder[0], remainder[1], remainder[2], remainder[3]])
-            } else {
-                f32::from_be_bytes([remainder[0], remainder[1], remainder[2], remainder[3]])
-            };
+            let v = endian.read_f32([remainder[0], remainder[1], remainder[2], remainder[3]]);
             target.push(v as f64);
         }
 
@@ -169,18 +149,12 @@ impl<'a> MmapReader<'a> {
         let bytes = self.read_bytes(byte_count)?;
 
         target.reserve(count);
-        let is_little = matches!(self.endian.unwrap_or(Endian::Little), Endian::Little);
+        let endian = self.endian.unwrap_or(Endian::Little);
 
         for chunk in bytes.chunks_exact(8) {
-            let v = if is_little {
-                f64::from_le_bytes([
-                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-                ])
-            } else {
-                f64::from_be_bytes([
-                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-                ])
-            };
+            let v = endian.read_f64([
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+            ]);
             target.push(v);
         }
 

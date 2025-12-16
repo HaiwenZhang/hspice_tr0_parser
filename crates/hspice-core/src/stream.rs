@@ -11,10 +11,7 @@
 //! - Peak memory is O(chunk_size * num_signals), not O(file_size)
 
 use crate::parser::{parse_header_only, HeaderMetadata};
-use crate::reader::MmapReader;
-use crate::types::{
-    PostVersion, Result, VectorData, COMPLEX_VAR, END_MARKER_2001, END_MARKER_9601,
-};
+use crate::types::{PostVersion, Result, VectorData, COMPLEX_VAR};
 use memmap2::Mmap;
 use num_complex::Complex64;
 use std::collections::{HashMap, HashSet};
@@ -147,63 +144,37 @@ impl HspiceStreamReader {
     /// Read one complete data block from file
     /// Returns raw f64 values, preserving block boundary
     fn read_one_block(&mut self) -> Result<Option<Vec<f64>>> {
+        use crate::block_reader::BlockReader;
+
         if self.finished || self.data_position >= self.mmap.len() {
             return Ok(None);
         }
 
-        let mut reader = MmapReader::new(&self.mmap[self.data_position..]);
-        let item_size = match self.metadata.post_version {
-            PostVersion::V9601 => 4usize,
-            PostVersion::V2001 => 8usize,
-        };
+        let data_slice = &self.mmap[self.data_position..];
+        let mut block_reader = BlockReader::new(data_slice, self.metadata.post_version);
 
-        // Read block header
-        let (num_items, trailer) = match reader.read_block_header(item_size) {
-            Ok(r) => r,
-            Err(_) => {
+        match block_reader.next_block()? {
+            Some(block) => {
+                // Update position
+                self.data_position += block_reader.bytes_consumed();
+
+                if block.is_end {
+                    self.finished = true;
+                }
+
+                // Remove end marker if present
+                let mut values = block.values;
+                if block.is_end && !values.is_empty() {
+                    values.pop();
+                }
+
+                Ok(Some(values))
+            }
+            None => {
                 self.finished = true;
-                return Ok(None);
-            }
-        };
-
-        // Read data into buffer
-        let mut block_data = Vec::with_capacity(num_items);
-        let is_end = match self.metadata.post_version {
-            PostVersion::V9601 => {
-                reader.read_floats_as_f64_into(num_items, &mut block_data)?;
-                block_data
-                    .last()
-                    .map(|&v| v as f32 >= END_MARKER_9601)
-                    .unwrap_or(false)
-            }
-            PostVersion::V2001 => {
-                reader.read_doubles_into(num_items, &mut block_data)?;
-                block_data
-                    .last()
-                    .map(|&v| v >= END_MARKER_2001)
-                    .unwrap_or(false)
-            }
-        };
-
-        // Read trailer
-        if reader.read_block_trailer(trailer).is_err() {
-            self.finished = true;
-            return Ok(None);
-        }
-
-        // Update position: 16 bytes header + data + 4 bytes trailer
-        let bytes_read = 16 + (num_items * item_size) + 4;
-        self.data_position += bytes_read;
-
-        if is_end {
-            self.finished = true;
-            // Remove end marker
-            if !block_data.is_empty() {
-                block_data.pop();
+                Ok(None)
             }
         }
-
-        Ok(Some(block_data))
     }
 
     /// Parse raw block data into rows, handling incomplete rows at boundaries
@@ -262,84 +233,99 @@ impl HspiceStreamReader {
         }
     }
 
+    // ========================================================================
+    // Helper Methods
+    // ========================================================================
+
+    /// Check if signal should be included based on filter
+    #[inline]
+    fn should_include_signal(&self, name: &str) -> bool {
+        self.signal_filter
+            .as_ref()
+            .map(|f| f.contains(name))
+            .unwrap_or(true)
+    }
+
+    /// Check if signal at given index is complex type
+    #[inline]
+    fn is_complex_signal(&self, signal_index: usize) -> bool {
+        self.metadata.var_type == COMPLEX_VAR
+            && signal_index < (self.metadata.num_variables - 1) as usize
+    }
+
+    // ========================================================================
+    // Core Methods
+    // ========================================================================
+
     /// Build chunk from accumulated rows
     fn build_chunk(&self, rows: &[Vec<f64>]) -> Option<DataChunk> {
         if rows.is_empty() {
             return None;
         }
 
-        let var_type = self.metadata.var_type;
-        let num_variables = self.metadata.num_variables;
-
         // Initialize vectors
         let mut scale_vec: Vec<f64> = Vec::with_capacity(rows.len());
         let mut signal_vecs: HashMap<String, Vec<f64>> = HashMap::new();
         let mut complex_vecs: HashMap<String, Vec<Complex64>> = HashMap::new();
 
-        // Pre-allocate for each signal
+        // Pre-allocate storage for each signal
         for (i, name) in self.metadata.names.iter().enumerate() {
-            if let Some(ref filter) = self.signal_filter {
-                if !filter.contains(name) {
-                    continue;
-                }
+            if !self.should_include_signal(name) {
+                continue;
             }
-            let is_complex = var_type == COMPLEX_VAR && i < (num_variables - 1) as usize;
-            if is_complex {
+            if self.is_complex_signal(i) {
                 complex_vecs.insert(name.clone(), Vec::with_capacity(rows.len()));
             } else {
                 signal_vecs.insert(name.clone(), Vec::with_capacity(rows.len()));
             }
         }
 
-        // Parse rows into columns
+        // Parse row data into columns
         for row in rows {
             if row.is_empty() {
                 continue;
             }
 
-            // First value is always scale
+            // First value is always the scale
             scale_vec.push(row[0]);
 
+            // Parse signal columns
             let mut col_idx = 1;
             for (i, name) in self.metadata.names.iter().enumerate() {
                 if col_idx >= row.len() {
                     break;
                 }
 
-                let is_complex = var_type == COMPLEX_VAR && i < (num_variables - 1) as usize;
+                let is_complex = self.is_complex_signal(i);
+                let col_width = if is_complex { 2 } else { 1 };
 
-                if let Some(ref filter) = self.signal_filter {
-                    if !filter.contains(name) {
-                        col_idx += if is_complex { 2 } else { 1 };
-                        continue;
-                    }
+                // Skip filtered signals
+                if !self.should_include_signal(name) {
+                    col_idx += col_width;
+                    continue;
                 }
 
+                // Write signal data
                 if is_complex && col_idx + 1 < row.len() {
                     if let Some(vec) = complex_vecs.get_mut(name) {
                         vec.push(Complex64::new(row[col_idx], row[col_idx + 1]));
                     }
-                    col_idx += 2;
-                } else {
-                    if let Some(vec) = signal_vecs.get_mut(name) {
-                        vec.push(row[col_idx]);
-                    }
-                    col_idx += 1;
+                } else if let Some(vec) = signal_vecs.get_mut(name) {
+                    vec.push(row[col_idx]);
                 }
+                col_idx += col_width;
             }
         }
 
         // Build chunk data
-        let mut data = HashMap::new();
-
         let time_start = scale_vec.first().copied().unwrap_or(0.0);
         let time_end = scale_vec.last().copied().unwrap_or(0.0);
 
+        let mut data = HashMap::new();
         data.insert(
             self.metadata.scale_name.clone(),
             VectorData::Real(scale_vec),
         );
-
         for (name, vec) in signal_vecs {
             data.insert(name, VectorData::Real(vec));
         }

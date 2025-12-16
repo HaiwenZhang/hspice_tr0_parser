@@ -48,6 +48,35 @@ pub enum Endian {
     Big,
 }
 
+impl Endian {
+    /// Read i32 with correct byte order
+    #[inline]
+    pub fn read_i32(&self, bytes: [u8; 4]) -> i32 {
+        match self {
+            Endian::Little => i32::from_le_bytes(bytes),
+            Endian::Big => i32::from_be_bytes(bytes),
+        }
+    }
+
+    /// Read f32 with correct byte order
+    #[inline]
+    pub fn read_f32(&self, bytes: [u8; 4]) -> f32 {
+        match self {
+            Endian::Little => f32::from_le_bytes(bytes),
+            Endian::Big => f32::from_be_bytes(bytes),
+        }
+    }
+
+    /// Read f64 with correct byte order
+    #[inline]
+    pub fn read_f64(&self, bytes: [u8; 8]) -> f64 {
+        match self {
+            Endian::Little => f64::from_le_bytes(bytes),
+            Endian::Big => f64::from_be_bytes(bytes),
+        }
+    }
+}
+
 /// Post format version - determines data precision
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PostVersion {
@@ -96,6 +125,39 @@ impl AnalysisType {
     }
 }
 
+// ============================================================================
+// Standard Trait Implementations for AnalysisType
+// ============================================================================
+
+impl std::fmt::Display for AnalysisType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            AnalysisType::Transient => "transient",
+            AnalysisType::AC => "ac",
+            AnalysisType::DC => "dc",
+            AnalysisType::Operating => "operating",
+            AnalysisType::Noise => "noise",
+            AnalysisType::Unknown => "unknown",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl std::str::FromStr for AnalysisType {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "transient" | "tran" => AnalysisType::Transient,
+            "ac" => AnalysisType::AC,
+            "dc" => AnalysisType::DC,
+            "operating" | "op" => AnalysisType::Operating,
+            "noise" => AnalysisType::Noise,
+            _ => AnalysisType::Unknown,
+        })
+    }
+}
+
 /// Variable type (voltage, current, time, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum VarType {
@@ -127,6 +189,31 @@ impl VarType {
         } else {
             VarType::Unknown
         }
+    }
+}
+
+// ============================================================================
+// Standard Trait Implementations for VarType
+// ============================================================================
+
+impl std::fmt::Display for VarType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            VarType::Time => "time",
+            VarType::Frequency => "frequency",
+            VarType::Voltage => "voltage",
+            VarType::Current => "current",
+            VarType::Unknown => "unknown",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl std::str::FromStr for VarType {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self::from_name(s))
     }
 }
 
