@@ -5,12 +5,26 @@ Rust implementation with PyO3 by Haiwen Zhang
 
 import hspicetr0parser as _lib
 
-__all__ = ['read', 'read_raw', 'convert_to_raw', 'stream', 'WaveformResult', 'Variable', 'DataTable']
+__all__ = ['read', 'read_raw', 'convert_to_raw', 'stream', 'init_logging', 'WaveformResult', 'Variable', 'DataTable']
 
 # Re-export classes
 WaveformResult = _lib.WaveformResult
 Variable = _lib.Variable
 DataTable = _lib.DataTable
+
+
+def init_logging(level="info"):
+    """
+    Initialize logging with specified level.
+    
+    Args:
+        level: Log level ("trace", "debug", "info", "warn", "error")
+    
+    Example:
+        >>> from hspice_tr0_parser import init_logging
+        >>> init_logging("debug")
+    """
+    return _lib.init_logging(level)
 
 
 def read(filename, debug=0):
@@ -19,7 +33,7 @@ def read(filename, debug=0):
     
     Args:
         filename: Path to the waveform file (.tr0, .ac0, .sw0)
-        debug: Debug level (0=quiet, 1=info, 2=verbose)
+        debug: Debug level (deprecated, use init_logging() instead)
     
     Returns:
         WaveformResult object with the following attributes:
@@ -47,7 +61,11 @@ def read(filename, debug=0):
         >>> for var in result.variables:
         ...     print(f"{var.name}: {var.var_type}")
     """
-    return _lib.read(filename, debug)
+    # Enable logging if debug > 0 for backward compatibility
+    if debug > 0:
+        levels = {1: "info", 2: "debug"}
+        _lib.init_logging(levels.get(debug, "info"))
+    return _lib.read(filename)
 
 
 def convert_to_raw(input_path, output_path, debug=0):
@@ -57,7 +75,7 @@ def convert_to_raw(input_path, output_path, debug=0):
     Args:
         input_path: Path to the input HSPICE file
         output_path: Path for the output .raw file
-        debug: Debug level (0=quiet, 1=info, 2=verbose)
+        debug: Debug level (deprecated, use init_logging() instead)
     
     Returns:
         True if conversion succeeded, False otherwise.
@@ -67,7 +85,11 @@ def convert_to_raw(input_path, output_path, debug=0):
         >>> convert_to_raw('simulation.tr0', 'simulation.raw')
         True
     """
-    return _lib.convert_to_raw(input_path, output_path, debug)
+    # Enable logging if debug > 0 for backward compatibility
+    if debug > 0:
+        levels = {1: "info", 2: "debug"}
+        _lib.init_logging(levels.get(debug, "info"))
+    return _lib.convert_to_raw(input_path, output_path)
 
 
 def stream(filename, chunk_size=10000, signals=None, debug=0):
@@ -78,7 +100,7 @@ def stream(filename, chunk_size=10000, signals=None, debug=0):
         filename: Path to the waveform file
         chunk_size: Minimum points per chunk (default: 10000)
         signals: Optional list of signal names to filter
-        debug: Debug level
+        debug: Debug level (deprecated, use init_logging() instead)
     
     Yields:
         dict: Chunk with 'chunk_index', 'time_range', 'data'
@@ -89,7 +111,11 @@ def stream(filename, chunk_size=10000, signals=None, debug=0):
         ...     print(f"Chunk {chunk['chunk_index']}: {chunk['time_range']}")
         ...     time = chunk['data']['TIME']
     """
-    chunks = _lib.stream(filename, chunk_size, signals, debug)
+    # Enable logging if debug > 0 for backward compatibility
+    if debug > 0:
+        levels = {1: "info", 2: "debug"}
+        _lib.init_logging(levels.get(debug, "info"))
+    chunks = _lib.stream(filename, chunk_size, signals)
     for chunk in chunks:
         yield chunk
 
@@ -100,7 +126,7 @@ def read_raw(filename, debug=0):
     
     Args:
         filename: Path to the raw file (.raw)
-        debug: Debug level (0=quiet, 1=info, 2=verbose)
+        debug: Debug level (deprecated, use init_logging() instead)
     
     Returns:
         WaveformResult object with the following attributes:
@@ -120,4 +146,8 @@ def read_raw(filename, debug=0):
         >>> time = result.get('time')
         >>> vout = result.get('v(out)')
     """
-    return _lib.read_raw(filename, debug)
+    # Enable logging if debug > 0 for backward compatibility
+    if debug > 0:
+        levels = {1: "info", 2: "debug"}
+        _lib.init_logging(levels.get(debug, "info"))
+    return _lib.read_raw(filename)
