@@ -257,85 +257,94 @@ impl HspiceStreamReader {
     // Core Methods
     // ========================================================================
 
+    /// Allocate storage for signal vectors based on filter and type
+    fn allocate_signal_storage(
+        &self,
+        capacity: usize,
+    ) -> (HashMap<String, Vec<f64>>, HashMap<String, Vec<Complex64>>) {
+        let mut real_vecs = HashMap::new();
+        let mut complex_vecs = HashMap::new();
+        for (i, name) in self.metadata.names.iter().enumerate() {
+            if !self.should_include_signal(name) {
+                continue;
+            }
+            if self.is_complex_signal(i) {
+                complex_vecs.insert(name.clone(), Vec::with_capacity(capacity));
+            } else {
+                real_vecs.insert(name.clone(), Vec::with_capacity(capacity));
+            }
+        }
+        (real_vecs, complex_vecs)
+    }
+
+    /// Parse a single row into signal vectors
+    fn parse_row_into_signals(
+        &self,
+        row: &[f64],
+        real_vecs: &mut HashMap<String, Vec<f64>>,
+        complex_vecs: &mut HashMap<String, Vec<Complex64>>,
+    ) {
+        let mut col_idx = 1;
+        for (i, name) in self.metadata.names.iter().enumerate() {
+            if col_idx >= row.len() {
+                break;
+            }
+            let is_complex = self.is_complex_signal(i);
+            let col_width = if is_complex { 2 } else { 1 };
+
+            if self.should_include_signal(name) {
+                if is_complex && col_idx + 1 < row.len() {
+                    if let Some(vec) = complex_vecs.get_mut(name) {
+                        vec.push(Complex64::new(row[col_idx], row[col_idx + 1]));
+                    }
+                } else if let Some(vec) = real_vecs.get_mut(name) {
+                    vec.push(row[col_idx]);
+                }
+            }
+            col_idx += col_width;
+        }
+    }
+
     /// Build chunk from accumulated rows
     fn build_chunk(&self, rows: &[Vec<f64>]) -> Option<DataChunk> {
         if rows.is_empty() {
             return None;
         }
 
-        // Initialize vectors
+        // Allocate storage
         let mut scale_vec: Vec<f64> = Vec::with_capacity(rows.len());
-        let mut signal_vecs: HashMap<String, Vec<f64>> = HashMap::new();
-        let mut complex_vecs: HashMap<String, Vec<Complex64>> = HashMap::new();
+        let (mut real_vecs, mut complex_vecs) = self.allocate_signal_storage(rows.len());
 
-        // Pre-allocate storage for each signal
-        for (i, name) in self.metadata.names.iter().enumerate() {
-            if !self.should_include_signal(name) {
-                continue;
-            }
-            if self.is_complex_signal(i) {
-                complex_vecs.insert(name.clone(), Vec::with_capacity(rows.len()));
-            } else {
-                signal_vecs.insert(name.clone(), Vec::with_capacity(rows.len()));
-            }
-        }
-
-        // Parse row data into columns
+        // Parse all rows
         for row in rows {
             if row.is_empty() {
                 continue;
             }
-
-            // First value is always the scale
             scale_vec.push(row[0]);
-
-            // Parse signal columns
-            let mut col_idx = 1;
-            for (i, name) in self.metadata.names.iter().enumerate() {
-                if col_idx >= row.len() {
-                    break;
-                }
-
-                let is_complex = self.is_complex_signal(i);
-                let col_width = if is_complex { 2 } else { 1 };
-
-                // Skip filtered signals
-                if !self.should_include_signal(name) {
-                    col_idx += col_width;
-                    continue;
-                }
-
-                // Write signal data
-                if is_complex && col_idx + 1 < row.len() {
-                    if let Some(vec) = complex_vecs.get_mut(name) {
-                        vec.push(Complex64::new(row[col_idx], row[col_idx + 1]));
-                    }
-                } else if let Some(vec) = signal_vecs.get_mut(name) {
-                    vec.push(row[col_idx]);
-                }
-                col_idx += col_width;
-            }
+            self.parse_row_into_signals(row, &mut real_vecs, &mut complex_vecs);
         }
 
-        // Build chunk data
-        let time_start = scale_vec.first().copied().unwrap_or(0.0);
-        let time_end = scale_vec.last().copied().unwrap_or(0.0);
+        // Build result
+        let time_range = (
+            scale_vec.first().copied().unwrap_or(0.0),
+            scale_vec.last().copied().unwrap_or(0.0),
+        );
 
         let mut data = HashMap::new();
         data.insert(
             self.metadata.scale_name.clone(),
             VectorData::Real(scale_vec),
         );
-        for (name, vec) in signal_vecs {
-            data.insert(name, VectorData::Real(vec));
-        }
-        for (name, vec) in complex_vecs {
-            data.insert(name, VectorData::Complex(vec));
-        }
+        data.extend(real_vecs.into_iter().map(|(k, v)| (k, VectorData::Real(v))));
+        data.extend(
+            complex_vecs
+                .into_iter()
+                .map(|(k, v)| (k, VectorData::Complex(v))),
+        );
 
         Some(DataChunk {
             chunk_index: self.current_chunk,
-            time_range: (time_start, time_end),
+            time_range,
             data,
         })
     }

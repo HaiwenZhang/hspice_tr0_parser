@@ -7,6 +7,16 @@ use num_complex::Complex64;
 use std::fs::File;
 use std::path::Path;
 
+// ============================================================================
+// Internal Types
+// ============================================================================
+
+/// Internal buffer for building signal vectors during parsing
+enum VectorBuilder {
+    Real(Vec<f64>),
+    Complex(Vec<Complex64>),
+}
+
 /// Find subsequence in a byte slice
 #[inline]
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -226,6 +236,76 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
 // Data processing
 // ============================================================================
 
+/// Layout parameters for parsing raw data rows
+struct DataLayout {
+    num_rows: usize,
+    data_start: usize,
+    sweep_value: Option<f64>,
+    num_complex_signals: usize,
+}
+
+impl DataLayout {
+    fn new(
+        raw_data: &[f64],
+        num_vectors: usize,
+        num_variables: i32,
+        var_type: i32,
+        has_sweep: bool,
+    ) -> Self {
+        let num_columns = if var_type == COMPLEX_VAR {
+            num_vectors + (num_variables - 1) as usize
+        } else {
+            num_vectors
+        };
+        let data_offset = if has_sweep { 2 } else { 1 };
+        let num_rows = raw_data.len().saturating_sub(data_offset) / num_columns.max(1);
+        let data_start = if has_sweep { 1 } else { 0 };
+        let sweep_value = if has_sweep {
+            raw_data.first().copied()
+        } else {
+            None
+        };
+        let num_complex_signals = if var_type == COMPLEX_VAR {
+            (num_variables - 1) as usize
+        } else {
+            0
+        };
+        Self {
+            num_rows,
+            data_start,
+            sweep_value,
+            num_complex_signals,
+        }
+    }
+
+    fn is_complex_signal(&self, index: usize) -> bool {
+        index < self.num_complex_signals
+    }
+}
+
+impl VectorBuilder {
+    fn push_value(&mut self, raw_data: &[f64], pos: &mut usize, is_complex: bool) {
+        match self {
+            VectorBuilder::Complex(vec) if is_complex => {
+                vec.push(Complex64::new(raw_data[*pos], raw_data[*pos + 1]));
+                *pos += 2;
+            }
+            VectorBuilder::Real(vec) => {
+                vec.push(raw_data[*pos]);
+                *pos += 1;
+            }
+            _ => *pos += 1,
+        }
+    }
+
+    fn into_vector_data(self) -> VectorData {
+        match self {
+            VectorBuilder::Real(vec) => VectorData::Real(vec),
+            VectorBuilder::Complex(vec) => VectorData::Complex(vec),
+        }
+    }
+}
+
 /// Process raw data into vectors
 fn process_raw_data(
     raw_data: &[f64],
@@ -234,80 +314,36 @@ fn process_raw_data(
     var_type: i32,
     has_sweep: bool,
 ) -> (Option<f64>, Vec<VectorData>) {
-    let num_columns = if var_type == COMPLEX_VAR {
-        num_vectors + (num_variables - 1) as usize
-    } else {
-        num_vectors
-    };
+    let layout = DataLayout::new(raw_data, num_vectors, num_variables, var_type, has_sweep);
 
-    let data_offset = if has_sweep { 2 } else { 1 };
-    let num_rows = (raw_data.len().saturating_sub(data_offset)) / num_columns.max(1);
-    let data_start = if has_sweep { 1 } else { 0 };
-    let sweep_value = if has_sweep { Some(raw_data[0]) } else { None };
-
-    // Pre-allocate all vectors
-    let mut vectors: Vec<VectorData> = Vec::with_capacity(num_vectors);
-
-    // Scale (always real, first column)
-    let mut scale_vec = Vec::with_capacity(num_rows);
-
-    // Signal vectors
-    let mut signal_bufs: Vec<SignalBuffer> = (0..num_vectors - 1)
+    // Pre-allocate buffers
+    let mut scale_vec = Vec::with_capacity(layout.num_rows);
+    let mut signal_bufs: Vec<VectorBuilder> = (0..num_vectors - 1)
         .map(|i| {
-            let is_complex = var_type == COMPLEX_VAR && i < (num_variables - 1) as usize;
-            if is_complex {
-                SignalBuffer::Complex(Vec::with_capacity(num_rows))
+            if layout.is_complex_signal(i) {
+                VectorBuilder::Complex(Vec::with_capacity(layout.num_rows))
             } else {
-                SignalBuffer::Real(Vec::with_capacity(num_rows))
+                VectorBuilder::Real(Vec::with_capacity(layout.num_rows))
             }
         })
         .collect();
 
     // Single pass through raw data
-    let mut pos = data_start;
-    for _ in 0..num_rows {
-        // First column is always scale (real)
+    let mut pos = layout.data_start;
+    for _ in 0..layout.num_rows {
         scale_vec.push(raw_data[pos]);
         pos += 1;
-
-        // Remaining columns
         for (i, buf) in signal_bufs.iter_mut().enumerate() {
-            let is_complex_col = var_type == COMPLEX_VAR && i < (num_variables - 1) as usize;
-            match buf {
-                SignalBuffer::Complex(vec) if is_complex_col => {
-                    let real = raw_data[pos];
-                    let imag = raw_data[pos + 1];
-                    vec.push(Complex64::new(real, imag));
-                    pos += 2;
-                }
-                SignalBuffer::Real(vec) => {
-                    vec.push(raw_data[pos]);
-                    pos += 1;
-                }
-                _ => {
-                    pos += 1;
-                }
-            }
+            buf.push_value(raw_data, &mut pos, layout.is_complex_signal(i));
         }
     }
 
-    // Build vectors in order
+    // Build final vectors
+    let mut vectors = Vec::with_capacity(num_vectors);
     vectors.push(VectorData::Real(scale_vec));
-    for buf in signal_bufs {
-        let vector_data = match buf {
-            SignalBuffer::Real(vec) => VectorData::Real(vec),
-            SignalBuffer::Complex(vec) => VectorData::Complex(vec),
-        };
-        vectors.push(vector_data);
-    }
+    vectors.extend(signal_bufs.into_iter().map(VectorBuilder::into_vector_data));
 
-    (sweep_value, vectors)
-}
-
-/// Internal buffer type
-enum SignalBuffer {
-    Real(Vec<f64>),
-    Complex(Vec<Complex64>),
+    (layout.sweep_value, vectors)
 }
 
 // ============================================================================

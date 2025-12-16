@@ -131,11 +131,18 @@ impl<'a> BlockReader<'a> {
     }
 
     /// Get divisor for capacity estimation
+    ///
+    /// These values are empirical estimates accounting for:
+    /// - Block header overhead (16 bytes) + trailer (4 bytes) = 20 bytes per block
+    /// - Average block size varies by format
+    ///
+    /// V9601: ~5 bytes per value (4 byte f32 + ~1 byte overhead amortized)
+    /// V2001: ~9 bytes per value (8 byte f64 + ~1 byte overhead amortized)
     #[inline]
     fn estimate_divisor(&self) -> usize {
         match self.version {
-            PostVersion::V9601 => 5,
-            PostVersion::V2001 => 9,
+            PostVersion::V9601 => 5, // 4 bytes (f32) + overhead
+            PostVersion::V2001 => 9, // 8 bytes (f64) + overhead
         }
     }
 

@@ -153,6 +153,14 @@ fn parse_header<R: BufRead + Seek>(
     ))
 }
 
+/// Distribute point values into column vectors (eliminates duplication in binary/ascii parsing)
+#[inline]
+fn distribute_to_columns<T: Clone>(vectors: &mut [Vec<T>], values: impl IntoIterator<Item = T>) {
+    for (vec, val) in vectors.iter_mut().zip(values) {
+        vec.push(val);
+    }
+}
+
 fn parse_binary_data<R: Read>(
     reader: &mut R,
     header: &RawHeader,
@@ -166,38 +174,26 @@ fn parse_binary_data<R: Read>(
         let mut vectors: Vec<Vec<Complex64>> = vec![Vec::with_capacity(num_points); num_vars];
 
         for _point in 0..num_points {
-            // Read all complex values for the current point
-            let mut current_point_values = Vec::with_capacity(num_vars);
-            for _ in 0..num_vars {
-                let re = reader.read_f64::<LittleEndian>()?;
-                let im = reader.read_f64::<LittleEndian>()?;
-                current_point_values.push(Complex64::new(re, im));
-            }
-
-            // Distribute values to the respective vectors using a zipped iterator
-            for (vec, val) in vectors.iter_mut().zip(current_point_values.into_iter()) {
-                vec.push(val);
-            }
+            let values = (0..num_vars)
+                .map(|_| {
+                    let re = reader.read_f64::<LittleEndian>()?;
+                    let im = reader.read_f64::<LittleEndian>()?;
+                    Ok(Complex64::new(re, im))
+                })
+                .collect::<std::io::Result<Vec<_>>>()?;
+            distribute_to_columns(&mut vectors, values);
         }
 
         Ok(vectors.into_iter().map(VectorData::Complex).collect())
     } else {
-        // Real data: scale is f64, others are f64 (ngspice default)
-        // Some tools use f32 for non-scale, but ngspice uses f64 for all
+        // Real data: all values are f64 (ngspice default)
         let mut vectors: Vec<Vec<f64>> = vec![Vec::with_capacity(num_points); num_vars];
 
         for _point in 0..num_points {
-            // Read all real values for the current point
-            let mut current_point_values = Vec::with_capacity(num_vars);
-            for _ in 0..num_vars {
-                let value = reader.read_f64::<LittleEndian>()?;
-                current_point_values.push(value);
-            }
-
-            // Distribute values to the respective vectors using a zipped iterator
-            for (vec, val) in vectors.iter_mut().zip(current_point_values.into_iter()) {
-                vec.push(val);
-            }
+            let values = (0..num_vars)
+                .map(|_| reader.read_f64::<LittleEndian>())
+                .collect::<std::io::Result<Vec<_>>>()?;
+            distribute_to_columns(&mut vectors, values);
         }
 
         Ok(vectors.into_iter().map(VectorData::Real).collect())

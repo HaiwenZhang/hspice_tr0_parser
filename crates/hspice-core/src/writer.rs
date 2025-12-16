@@ -51,12 +51,10 @@ fn write_raw_data<W: Write>(
                     writer.write_all(&val.to_le_bytes())?;
                 }
                 VectorData::Complex(data) => {
-                    // For complex, write magnitude
-                    let val = data
-                        .get(i)
-                        .map(|c| (c.re * c.re + c.im * c.im).sqrt())
-                        .unwrap_or(0.0);
-                    writer.write_all(&val.to_le_bytes())?;
+                    // SPICE3 complex format: write real part then imaginary part (16 bytes total)
+                    let c = data.get(i).copied().unwrap_or_default();
+                    writer.write_all(&c.re.to_le_bytes())?;
+                    writer.write_all(&c.im.to_le_bytes())?;
                 }
             }
         }

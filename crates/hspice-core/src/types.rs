@@ -48,33 +48,23 @@ pub enum Endian {
     Big,
 }
 
+/// Generate endian-aware read methods
+macro_rules! impl_endian_read {
+    ($fn_name:ident, $ty:ty) => {
+        #[inline]
+        pub fn $fn_name(&self, bytes: [u8; std::mem::size_of::<$ty>()]) -> $ty {
+            match self {
+                Endian::Little => <$ty>::from_le_bytes(bytes),
+                Endian::Big => <$ty>::from_be_bytes(bytes),
+            }
+        }
+    };
+}
+
 impl Endian {
-    /// Read i32 with correct byte order
-    #[inline]
-    pub fn read_i32(&self, bytes: [u8; 4]) -> i32 {
-        match self {
-            Endian::Little => i32::from_le_bytes(bytes),
-            Endian::Big => i32::from_be_bytes(bytes),
-        }
-    }
-
-    /// Read f32 with correct byte order
-    #[inline]
-    pub fn read_f32(&self, bytes: [u8; 4]) -> f32 {
-        match self {
-            Endian::Little => f32::from_le_bytes(bytes),
-            Endian::Big => f32::from_be_bytes(bytes),
-        }
-    }
-
-    /// Read f64 with correct byte order
-    #[inline]
-    pub fn read_f64(&self, bytes: [u8; 8]) -> f64 {
-        match self {
-            Endian::Little => f64::from_le_bytes(bytes),
-            Endian::Big => f64::from_be_bytes(bytes),
-        }
-    }
+    impl_endian_read!(read_i32, i32);
+    impl_endian_read!(read_f32, f32);
+    impl_endian_read!(read_f64, f64);
 }
 
 /// Post format version - determines data precision
