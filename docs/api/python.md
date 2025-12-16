@@ -11,14 +11,49 @@ pip install maturin numpy
 maturin develop --release
 ```
 
+## Logging
+
+The library uses structured logging via `tracing`. To enable log output, call `init_logging()` before using other functions:
+
+```python
+import hspicetr0parser
+
+# Initialize logging with desired level
+# Levels: "trace", "debug", "info", "warn", "error"
+hspicetr0parser.init_logging("info")
+
+# Now all operations will output logs
+result = hspicetr0parser.read("simulation.tr0")
+```
+
+### Log Levels
+
+| Level   | Description                                                |
+| ------- | ---------------------------------------------------------- |
+| `trace` | Most verbose, includes per-chunk and per-sweep details     |
+| `debug` | Detailed info: file sizes, data block statistics           |
+| `info`  | Key operations: file open, parse complete, conversion done |
+| `warn`  | Warnings only                                              |
+| `error` | Errors only (default if not initialized)                   |
+
 ## API Reference
 
-### `read(filename, debug=0)`
+### `init_logging(level="info")`
+
+Initialize the logging subsystem. Call once at application startup.
+
+```python
+import hspicetr0parser
+
+hspicetr0parser.init_logging("debug")  # Enable debug logging
+```
+
+### `read(filename)`
 
 Read a waveform file and return a `WaveformResult` object.
 
 ```python
-from hspice_tr0_parser import read
+from hspicetr0parser import read
 
 result = read('simulation.tr0')
 print(result.title)        # Simulation title
@@ -27,34 +62,34 @@ print(result.analysis)     # 'transient', 'ac', 'dc', etc.
 print(result.scale_name)   # 'TIME', 'HERTZ', etc.
 ```
 
-### `convert_to_raw(input_path, output_path, debug=0)`
+### `convert_to_raw(input_path, output_path)`
 
 Convert HSPICE file to SPICE3 binary raw format.
 
 ```python
-from hspice_tr0_parser import convert_to_raw
+from hspicetr0parser import convert_to_raw
 
 success = convert_to_raw('simulation.tr0', 'output.raw')
 ```
 
-### `stream(filename, chunk_size=10000, signals=None, debug=0)`
+### `stream(filename, chunk_size=10000, signals=None)`
 
 Stream large files in chunks for memory efficiency.
 
 ```python
-from hspice_tr0_parser import stream
+from hspicetr0parser import stream
 
 for chunk in stream('large_file.tr0', chunk_size=50000):
     print(f"Chunk {chunk['chunk_index']}: {chunk['time_range']}")
     data = chunk['data']  # dict of signal_name -> numpy array
 ```
 
-### `read_raw(filename, debug=0)`
+### `read_raw(filename)`
 
 Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format).
 
 ```python
-from hspice_tr0_parser import read_raw
+from hspicetr0parser import read_raw
 
 result = read_raw('simulation.raw')
 print(result.title)
@@ -112,12 +147,15 @@ One data table per sweep point.
 
 ## Examples
 
-### Basic Reading
+### Basic Reading with Logging
 
 ```python
-from hspice_tr0_parser import read
+import hspicetr0parser
 
-result = read('simulation.tr0')
+# Enable info-level logging to see progress
+hspicetr0parser.init_logging("info")
+
+result = hspicetr0parser.read('simulation.tr0')
 
 print(f"Title: {result.title}")
 print(f"Analysis: {result.analysis}")
@@ -136,10 +174,10 @@ vout = result.get('v(out)')
 ### Plotting
 
 ```python
-from hspice_tr0_parser import read
+import hspicetr0parser
 import matplotlib.pyplot as plt
 
-result = read('simulation.tr0')
+result = hspicetr0parser.read('simulation.tr0')
 time = result.get('TIME') * 1e9  # Convert to ns
 
 plt.figure(figsize=(10, 6))
@@ -157,13 +195,16 @@ plt.show()
 ### Streaming Large Files
 
 ```python
-from hspice_tr0_parser import stream
+import hspicetr0parser
 import numpy as np
+
+# Enable trace logging for detailed chunk info
+hspicetr0parser.init_logging("trace")
 
 all_time = []
 all_vout = []
 
-for chunk in stream('large_sim.tr0', chunk_size=100000):
+for chunk in hspicetr0parser.stream('large_sim.tr0', chunk_size=100000):
     all_time.append(chunk['data']['TIME'])
     all_vout.append(chunk['data']['v(out)'])
 
@@ -175,9 +216,9 @@ print(f"Total points: {len(time)}")
 ### Working with Sweeps
 
 ```python
-from hspice_tr0_parser import read
+import hspicetr0parser
 
-result = read('sweep.tr0')
+result = hspicetr0parser.read('sweep.tr0')
 
 if result.has_sweep():
     print(f"Sweep parameter: {result.sweep_param}")
@@ -188,9 +229,12 @@ if result.has_sweep():
 ### Converting to SPICE3
 
 ```python
-from hspice_tr0_parser import convert_to_raw
+import hspicetr0parser
 
-if convert_to_raw('hspice.tr0', 'ngspice.raw'):
+# Enable logging to see conversion progress
+hspicetr0parser.init_logging("info")
+
+if hspicetr0parser.convert_to_raw('hspice.tr0', 'ngspice.raw'):
     print("Conversion successful!")
 ```
 
@@ -206,3 +250,16 @@ if convert_to_raw('hspice.tr0', 'ngspice.raw'):
 
 - Python >= 3.10
 - NumPy >= 2.0
+
+## Migration from v1.3.x
+
+The `debug` parameter has been removed from all functions. Use `init_logging()` instead:
+
+```python
+# Old (v1.3.x)
+result = read('file.tr0', debug=1)
+
+# New (v1.4.0+)
+init_logging("info")
+result = read('file.tr0')
+```

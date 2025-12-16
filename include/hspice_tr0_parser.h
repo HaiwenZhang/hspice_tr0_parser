@@ -7,11 +7,15 @@
  *   1. Link with libhspicetr0parser.a (static) or libhspicetr0parser.so
  * (dynamic)
  *   2. Include this header
- *   3. Call waveform_read() to parse a file
- *   4. Use accessor functions to retrieve data
- *   5. Call waveform_free() when done
+ *   3. (Optional) Call waveform_init_logging() to enable logging
+ *   4. Call waveform_read() to parse a file
+ *   5. Use accessor functions to retrieve data
+ *   6. Call waveform_free() when done
  *
  * Example:
+ *   // Optional: enable info-level logging
+ *   waveform_init_logging("info");
+ *
  *   CWaveformResult* result = waveform_read("simulation.tr0", 0);
  *   if (result) {
  *       printf("Title: %s\n", waveform_get_title(result));
@@ -66,6 +70,31 @@ typedef struct CWaveformStream CWaveformStream;
 #define WAVEFORM_VAR_UNKNOWN -1
 
 /* ============================================================================
+ * Logging Initialization
+ * ============================================================================
+ */
+
+/**
+ * Initialize the logging subsystem.
+ *
+ * Call this once at application startup before using other functions.
+ * If not called, logging is disabled (only errors to stderr).
+ *
+ * @param level Log level string: "trace", "debug", "info", "warn", "error"
+ * @return      0 on success, -1 if level string is null or invalid
+ *
+ * @note Can only be called once; subsequent calls have no effect.
+ *
+ * Example:
+ *   waveform_init_logging("info");  // Enable info-level logging
+ *   waveform_init_logging("debug"); // Enable debug-level logging
+ */
+int waveform_init_logging(const char *level);
+
+/** Legacy alias for waveform_init_logging */
+int hspice_init_logging(const char *level);
+
+/* ============================================================================
  * Result Creation and Destruction
  * ============================================================================
  */
@@ -74,10 +103,12 @@ typedef struct CWaveformStream CWaveformStream;
  * Read a waveform file.
  *
  * @param filename Path to the waveform file (.tr0, .ac0, .sw0)
- * @param debug    Debug level (0=quiet, 1=info, 2=verbose)
+ * @param debug    Debug level (DEPRECATED: ignored, use waveform_init_logging)
  * @return         Pointer to result on success, NULL on error
  *
  * @note The caller must free the result using waveform_free().
+ * @note The debug parameter is deprecated and ignored since v1.4.0.
+ *       Use waveform_init_logging() instead.
  */
 CWaveformResult *waveform_read(const char *filename, int debug);
 
@@ -85,10 +116,12 @@ CWaveformResult *waveform_read(const char *filename, int debug);
  * Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format).
  *
  * @param filename Path to the raw file (.raw)
- * @param debug    Debug level (0=quiet, 1=info, 2=verbose)
+ * @param debug    Debug level (DEPRECATED: ignored, use waveform_init_logging)
  * @return         Pointer to result on success, NULL on error
  *
  * @note The caller must free the result using waveform_free().
+ * @note The debug parameter is deprecated and ignored since v1.4.0.
+ *       Use waveform_init_logging() instead.
  */
 CWaveformResult *waveform_read_raw(const char *filename, int debug);
 
@@ -238,7 +271,8 @@ int waveform_get_complex_data(const CWaveformResult *result, int table_index,
  *
  * @param filename   Path to the waveform file
  * @param chunk_size Minimum points per chunk
- * @param debug      Debug level
+ * @param debug      Debug level (DEPRECATED: ignored, use
+ * waveform_init_logging)
  * @return           Stream handle, or NULL on error
  */
 CWaveformStream *waveform_stream_open(const char *filename, int chunk_size,

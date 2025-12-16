@@ -3,6 +3,7 @@
 use crate::types::{AnalysisType, Result, VectorData, WaveformError, WaveformResult};
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use tracing::{debug, info, instrument};
 
 /// Write SPICE3 binary raw file header
 fn write_raw_header<W: Write>(
@@ -64,10 +65,9 @@ fn write_raw_data<W: Write>(
 }
 
 /// Convert WaveformResult to SPICE3 binary raw format
-pub fn write_spice3_raw(result: &WaveformResult, output_path: &str, debug: i32) -> Result<()> {
-    if debug > 0 {
-        eprintln!("Writing SPICE3 raw file: {}", output_path);
-    }
+#[instrument(skip(result), fields(output = %output_path))]
+pub fn write_spice3_raw(result: &WaveformResult, output_path: &str) -> Result<()> {
+    info!("Writing SPICE3 raw file");
 
     // Get the first data table
     let table = result
@@ -76,11 +76,9 @@ pub fn write_spice3_raw(result: &WaveformResult, output_path: &str, debug: i32) 
         .ok_or_else(|| WaveformError::ParseError("No data tables found".into()))?;
 
     let num_points = table.len();
+    let num_vars = result.variables.len();
 
-    if debug > 0 {
-        eprintln!("  Points: {}", num_points);
-        eprintln!("  Variables: {}", result.variables.len());
-    }
+    debug!(points = num_points, variables = num_vars, "Data info");
 
     // Check for complex data
     let is_complex = table.vectors.iter().any(|v| v.is_complex());
@@ -115,19 +113,21 @@ pub fn write_spice3_raw(result: &WaveformResult, output_path: &str, debug: i32) 
 
     writer.flush()?;
 
-    if debug > 0 {
-        eprintln!("  Wrote {} bytes", std::fs::metadata(output_path)?.len());
-    }
+    let bytes_written = std::fs::metadata(output_path)?.len();
+    info!(bytes = bytes_written, "Write complete");
 
     Ok(())
 }
 
 /// Convert HSPICE .tr0 file to SPICE3 binary raw format
-pub fn hspice_to_raw_impl(input_path: &str, output_path: &str, debug: i32) -> Result<()> {
+#[instrument(skip_all, fields(input = %input_path, output = %output_path))]
+pub fn hspice_to_raw_impl(input_path: &str, output_path: &str) -> Result<()> {
     use crate::parser::hspice_read_impl;
 
-    let result = hspice_read_impl(input_path, debug)?;
-    write_spice3_raw(&result, output_path, debug)?;
+    info!("Converting HSPICE to SPICE3 raw format");
+    let result = hspice_read_impl(input_path)?;
+    write_spice3_raw(&result, output_path)?;
+    info!("Conversion complete");
 
     Ok(())
 }

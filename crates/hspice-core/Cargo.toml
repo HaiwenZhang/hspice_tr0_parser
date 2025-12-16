@@ -16,3 +16,4 @@ byteorder.workspace = true
 memmap2.workspace = true
 num-complex.workspace = true
 thiserror.workspace = true
+tracing.workspace = true

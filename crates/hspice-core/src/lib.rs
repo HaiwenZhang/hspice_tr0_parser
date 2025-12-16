@@ -13,6 +13,7 @@
 //! - Support for both 9601 (float32) and 2001 (float64) formats
 //! - Streaming reader for processing very large files
 //! - Format conversion to SPICE3 binary raw format
+//! - Structured logging via `tracing` for diagnostics
 //!
 //! ## Quick Start
 //!
@@ -44,6 +45,19 @@
 //!     let chunk = chunk.unwrap();
 //!     println!("Chunk {}: {:?}", chunk.chunk_index, chunk.time_range);
 //! }
+//! ```
+//!
+//! ## Enabling Logging
+//!
+//! This library uses `tracing` for structured logging. To see log output,
+//! initialize a tracing subscriber in your application:
+//!
+//! ```rust,ignore
+//! // Add tracing-subscriber to your Cargo.toml
+//! tracing_subscriber::fmt::init();
+//!
+//! // Now library logs will be visible
+//! let result = hspice_core::read("simulation.tr0").unwrap();
 //! ```
 
 mod block_reader;
@@ -114,16 +128,20 @@ pub use writer::write_spice3_raw;
 /// }
 /// ```
 pub fn read(filename: &str) -> Result<WaveformResult> {
-    parser::hspice_read_impl(filename, 0)
+    parser::hspice_read_impl(filename)
 }
 
 /// Read a waveform file with debug output.
 ///
+/// # Deprecated
+/// This function is deprecated. Use `read()` with a tracing subscriber instead.
+///
 /// # Arguments
 /// * `filename` - Path to the waveform file
-/// * `debug` - Debug level (0=quiet, 1=info, 2=verbose)
-pub fn read_debug(filename: &str, debug: i32) -> Result<WaveformResult> {
-    parser::hspice_read_impl(filename, debug)
+/// * `debug` - Debug level (ignored, use tracing levels instead)
+#[deprecated(since = "1.4.0", note = "Use read() with tracing subscriber instead")]
+pub fn read_debug(filename: &str, _debug: i32) -> Result<WaveformResult> {
+    parser::hspice_read_impl(filename)
 }
 
 /// Convert an HSPICE binary file to SPICE3 raw format.
@@ -136,12 +154,19 @@ pub fn read_debug(filename: &str, debug: i32) -> Result<WaveformResult> {
 /// * `Ok(())` - Conversion successful
 /// * `Err(WaveformError)` - If conversion fails
 pub fn read_and_convert(input_path: &str, output_path: &str) -> Result<()> {
-    writer::hspice_to_raw_impl(input_path, output_path, 0)
+    writer::hspice_to_raw_impl(input_path, output_path)
 }
 
 /// Convert an HSPICE binary file to SPICE3 raw format with debug output.
-pub fn read_and_convert_debug(input_path: &str, output_path: &str, debug: i32) -> Result<()> {
-    writer::hspice_to_raw_impl(input_path, output_path, debug)
+///
+/// # Deprecated
+/// This function is deprecated. Use `read_and_convert()` with a tracing subscriber instead.
+#[deprecated(
+    since = "1.4.0",
+    note = "Use read_and_convert() with tracing subscriber instead"
+)]
+pub fn read_and_convert_debug(input_path: &str, output_path: &str, _debug: i32) -> Result<()> {
+    writer::hspice_to_raw_impl(input_path, output_path)
 }
 
 // Re-export header parsing for advanced use

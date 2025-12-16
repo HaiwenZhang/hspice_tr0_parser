@@ -14,15 +14,57 @@ cargo build -p hspice-ffi --release
 
 Include `include/hspice_tr0_parser.h` in your project.
 
+## Logging
+
+The library uses structured logging via `tracing`. To enable log output, call `waveform_init_logging()` before other functions:
+
+```c
+#include "hspice_tr0_parser.h"
+
+int main() {
+    // Initialize logging with desired level
+    // Levels: "trace", "debug", "info", "warn", "error"
+    waveform_init_logging("info");
+
+    // Now all operations will output logs
+    CWaveformResult* result = waveform_read("simulation.tr0", 0);
+    // ...
+}
+```
+
+### Log Levels
+
+| Level   | Description                                                |
+| ------- | ---------------------------------------------------------- |
+| `trace` | Most verbose, includes per-chunk and per-sweep details     |
+| `debug` | Detailed info: file sizes, data block statistics           |
+| `info`  | Key operations: file open, parse complete, conversion done |
+| `warn`  | Warnings only                                              |
+| `error` | Errors only (default if not initialized)                   |
+
 ## API Reference
+
+### Logging Initialization
+
+```c
+// Initialize logging subsystem. Call once at application startup.
+// level: "trace", "debug", "info", "warn", "error"
+// Returns: 0 on success, -1 on error
+int waveform_init_logging(const char* level);
+
+// Legacy alias
+int hspice_init_logging(const char* level);
+```
 
 ### Result Management
 
 ```c
 // Read HSPICE waveform file
+// Note: debug parameter is deprecated and ignored. Use waveform_init_logging() instead.
 CWaveformResult* waveform_read(const char* filename, int debug);
 
 // Read SPICE3/ngspice raw file (auto-detects binary/ASCII)
+// Note: debug parameter is deprecated and ignored. Use waveform_init_logging() instead.
 CWaveformResult* waveform_read_raw(const char* filename, int debug);
 
 // Free result
@@ -75,6 +117,32 @@ int waveform_get_complex_data(const CWaveformResult* result,
                                int max_count);
 ```
 
+### Streaming API
+
+```c
+// Open file for streaming
+// Note: debug parameter is deprecated and ignored
+CWaveformStream* waveform_stream_open(const char* filename, int chunk_size, int debug);
+
+// Close stream
+void waveform_stream_close(CWaveformStream* stream);
+
+// Read next chunk. Returns: 1 = chunk available, 0 = end of file, -1 = error
+int waveform_stream_next(CWaveformStream* stream);
+
+// Get current chunk size
+int waveform_stream_get_chunk_size(const CWaveformStream* stream);
+
+// Get time range of current chunk
+int waveform_stream_get_time_range(const CWaveformStream* stream,
+                                    double* out_start, double* out_end);
+
+// Get signal data from current chunk
+int waveform_stream_get_signal_data(const CWaveformStream* stream,
+                                     const char* signal_name,
+                                     double* out_buffer, int max_count);
+```
+
 ## Constants
 
 ```c
@@ -82,6 +150,8 @@ int waveform_get_complex_data(const CWaveformResult* result,
 #define WAVEFORM_ANALYSIS_TRANSIENT  0
 #define WAVEFORM_ANALYSIS_AC         1
 #define WAVEFORM_ANALYSIS_DC         2
+#define WAVEFORM_ANALYSIS_OPERATING  3
+#define WAVEFORM_ANALYSIS_NOISE      4
 
 // Variable types
 #define WAVEFORM_VAR_TIME       0
@@ -98,6 +168,9 @@ int waveform_get_complex_data(const CWaveformResult* result,
 #include "hspice_tr0_parser.h"
 
 int main() {
+    // Enable info-level logging
+    waveform_init_logging("info");
+
     CWaveformResult* result = waveform_read("simulation.tr0", 0);
     if (!result) {
         fprintf(stderr, "Failed to read file\n");
@@ -152,6 +225,9 @@ export LD_LIBRARY_PATH=./target/release:$LD_LIBRARY_PATH
 #include "hspice_tr0_parser.h"
 
 int main() {
+    // Enable debug logging
+    waveform_init_logging("debug");
+
     auto result = waveform_read("simulation.tr0", 0);
     if (!result) return 1;
 
@@ -164,4 +240,17 @@ int main() {
     waveform_free(result);
     return 0;
 }
+```
+
+## Migration from v1.3.x
+
+The `debug` parameter is now ignored. Use `waveform_init_logging()` instead:
+
+```c
+// Old (v1.3.x) - debug parameter controlled output
+CWaveformResult* result = waveform_read("file.tr0", 1);
+
+// New (v1.4.0+) - use init_logging for control
+waveform_init_logging("info");
+CWaveformResult* result = waveform_read("file.tr0", 0);  // debug param ignored
 ```

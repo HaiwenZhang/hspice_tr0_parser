@@ -6,6 +6,7 @@ use memmap2::Mmap;
 use num_complex::Complex64;
 use std::fs::File;
 use std::path::Path;
+use tracing::{debug, info, instrument, trace, warn};
 
 // ============================================================================
 // Internal Types
@@ -46,11 +47,7 @@ fn read_header_blocks(reader: &mut MmapReader) -> Result<Vec<u8>> {
 }
 
 /// Read data blocks until end marker found - unified for all formats
-fn read_data_blocks(
-    reader: &mut MmapReader,
-    version: PostVersion,
-    debug: bool,
-) -> Result<Vec<f64>> {
+fn read_data_blocks(reader: &mut MmapReader, version: PostVersion) -> Result<Vec<f64>> {
     use crate::block_reader::BlockReader;
 
     // Get remaining bytes for BlockReader
@@ -60,14 +57,12 @@ fn read_data_blocks(
     let mut block_reader = BlockReader::new(data_slice, version);
     let raw_data = block_reader.read_all()?;
 
-    if debug {
-        eprintln!(
-            "Read {} data blocks ({}), {} total values",
-            block_reader.block_count(),
-            block_reader.format_name(),
-            raw_data.len()
-        );
-    }
+    debug!(
+        blocks = block_reader.block_count(),
+        format = block_reader.format_name(),
+        values = raw_data.len(),
+        "Read data blocks"
+    );
 
     Ok(raw_data)
 }
@@ -385,21 +380,16 @@ fn infer_analysis_type(filename: &str) -> AnalysisType {
 }
 
 /// Main HSPICE file reader - returns WaveformResult
-pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<WaveformResult> {
-    if debug > 0 {
-        eprintln!("Reading: {}", filename);
-    }
+#[instrument(skip_all, fields(file = %filename))]
+pub fn hspice_read_impl(filename: &str) -> Result<WaveformResult> {
+    info!("Reading HSPICE file");
 
     let file = File::open(filename)?;
     let mmap = unsafe { Mmap::map(&file)? };
 
-    if debug > 0 {
-        eprintln!(
-            "File size: {} bytes ({:.2} MB)",
-            mmap.len(),
-            mmap.len() as f64 / 1_048_576.0
-        );
-    }
+    let file_size = mmap.len();
+    let file_size_mb = file_size as f64 / 1_048_576.0;
+    debug!(size_bytes = file_size, size_mb = %format!("{:.2}", file_size_mb), "File mapped");
 
     validate_file_format(&mmap)?;
 
@@ -407,13 +397,15 @@ pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<WaveformResult> {
     let header_buf = read_header_blocks(&mut reader)?;
     let meta = parse_header_metadata(&header_buf)?;
 
-    if debug > 0 {
-        eprintln!("Post version: {:?}", meta.post_version);
-        eprintln!("Vectors: {}", meta.num_vectors);
-        eprintln!("Scale: {}", meta.scale_name);
-        if let Some(ref name) = meta.sweep_name {
-            eprintln!("Sweep: {} ({} points)", name, meta.sweep_size);
-        }
+    info!(
+        version = ?meta.post_version,
+        vectors = meta.num_vectors,
+        scale = %meta.scale_name,
+        "Header parsed"
+    );
+
+    if let Some(ref name) = meta.sweep_name {
+        info!(sweep_param = %name, sweep_points = meta.sweep_size, "Sweep detected");
     }
 
     // Infer analysis type
@@ -427,6 +419,7 @@ pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<WaveformResult> {
             infer_analysis_type(filename)
         }
     };
+    debug!(analysis = %analysis, "Analysis type inferred");
 
     // Build variable list
     let mut variables = Vec::with_capacity(meta.num_vectors);
@@ -434,16 +427,19 @@ pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<WaveformResult> {
     for name in &meta.names {
         variables.push(Variable::new(name));
     }
+    trace!(count = variables.len(), "Variables built");
 
     // Read data tables
     let mut tables = Vec::with_capacity(meta.sweep_size as usize);
 
     for sweep_idx in 0..meta.sweep_size {
-        if debug > 1 {
-            eprintln!("Reading sweep {}/{}", sweep_idx + 1, meta.sweep_size);
-        }
+        trace!(
+            sweep = sweep_idx + 1,
+            total = meta.sweep_size,
+            "Reading sweep"
+        );
 
-        let raw_data = read_data_blocks(&mut reader, meta.post_version, debug > 1)?;
+        let raw_data = read_data_blocks(&mut reader, meta.post_version)?;
         let (sweep_value, vectors) = process_raw_data(
             &raw_data,
             meta.num_vectors,
@@ -457,6 +453,12 @@ pub fn hspice_read_impl(filename: &str, debug: i32) -> Result<WaveformResult> {
             vectors,
         });
     }
+
+    info!(
+        tables = tables.len(),
+        points = tables.first().map(|t| t.len()).unwrap_or(0),
+        "Parsing complete"
+    );
 
     Ok(WaveformResult {
         title: meta.title,

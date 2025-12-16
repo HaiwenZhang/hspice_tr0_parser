@@ -9,6 +9,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use num_complex::Complex64;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use tracing::{debug, info, instrument, trace};
 
 /// Raw file format type
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,42 +33,56 @@ struct RawHeader {
 
 /// Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format)
 pub fn read_raw(filename: &str) -> Result<WaveformResult> {
-    read_raw_impl(filename, 0)
+    read_raw_impl(filename)
 }
 
 /// Read a SPICE3/ngspice raw file with debug output
-pub fn read_raw_debug(filename: &str, debug: i32) -> Result<WaveformResult> {
-    read_raw_impl(filename, debug)
+#[deprecated(
+    since = "1.4.0",
+    note = "Use read_raw() with tracing subscriber instead"
+)]
+pub fn read_raw_debug(filename: &str, _debug: i32) -> Result<WaveformResult> {
+    read_raw_impl(filename)
 }
 
-fn read_raw_impl(filename: &str, debug: i32) -> Result<WaveformResult> {
+#[instrument(skip_all, fields(file = %filename))]
+fn read_raw_impl(filename: &str) -> Result<WaveformResult> {
+    info!("Reading SPICE3 raw file");
+
     let file = File::open(filename)?;
     let mut reader = BufReader::new(file);
 
     // Read and parse header
-    let (header, format, data_start) = parse_header(&mut reader, debug)?;
+    let (header, format, data_start) = parse_header(&mut reader)?;
 
-    if debug > 0 {
-        eprintln!("Raw file: {}", filename);
-        eprintln!("  Format: {:?}", format);
-        eprintln!("  Title: {}", header.title);
-        eprintln!("  Variables: {}", header.num_variables);
-        eprintln!("  Points: {}", header.num_points);
-        eprintln!("  Complex: {}", header.is_complex);
-    }
+    info!(
+        format = ?format,
+        variables = header.num_variables,
+        points = header.num_points,
+        complex = header.is_complex,
+        "Header parsed"
+    );
+
+    debug!(title = %header.title, plotname = %header.plotname, "File info");
 
     // Seek to data start
     reader.seek(SeekFrom::Start(data_start))?;
 
     // Parse data based on format
     let vectors = match format {
-        RawFormat::Binary => parse_binary_data(&mut reader, &header, debug)?,
-        RawFormat::Ascii => parse_ascii_data(&mut reader, &header, debug)?,
+        RawFormat::Binary => parse_binary_data(&mut reader, &header)?,
+        RawFormat::Ascii => parse_ascii_data(&mut reader, &header)?,
     };
 
     // Build WaveformResult
     let analysis = infer_analysis_type(&header.plotname);
     let variables = build_variables(&header);
+
+    info!(
+        analysis = %analysis,
+        vectors = vectors.len(),
+        "Parsing complete"
+    );
 
     Ok(WaveformResult {
         title: header.title,
@@ -82,10 +97,7 @@ fn read_raw_impl(filename: &str, debug: i32) -> Result<WaveformResult> {
     })
 }
 
-fn parse_header<R: BufRead + Seek>(
-    reader: &mut R,
-    _debug: i32,
-) -> Result<(RawHeader, RawFormat, u64)> {
+fn parse_header<R: BufRead + Seek>(reader: &mut R) -> Result<(RawHeader, RawFormat, u64)> {
     let mut header = RawHeader::default();
     let mut line = String::new();
     let mut in_variables = false;
@@ -103,10 +115,12 @@ fn parse_header<R: BufRead + Seek>(
         // Check for data section markers
         if trimmed == "Binary:" {
             let pos = reader.stream_position()?;
+            trace!(position = pos, "Found binary data section");
             return Ok((header, RawFormat::Binary, pos));
         }
         if trimmed == "Values:" {
             let pos = reader.stream_position()?;
+            trace!(position = pos, "Found ASCII data section");
             return Ok((header, RawFormat::Ascii, pos));
         }
 
@@ -161,13 +175,16 @@ fn distribute_to_columns<T: Clone>(vectors: &mut [Vec<T>], values: impl IntoIter
     }
 }
 
-fn parse_binary_data<R: Read>(
-    reader: &mut R,
-    header: &RawHeader,
-    _debug: i32,
-) -> Result<Vec<VectorData>> {
+fn parse_binary_data<R: Read>(reader: &mut R, header: &RawHeader) -> Result<Vec<VectorData>> {
     let num_vars = header.num_variables;
     let num_points = header.num_points;
+
+    trace!(
+        num_vars = num_vars,
+        num_points = num_points,
+        complex = header.is_complex,
+        "Parsing binary data"
+    );
 
     if header.is_complex {
         // Complex data: all values are 16 bytes (two f64)
@@ -200,13 +217,16 @@ fn parse_binary_data<R: Read>(
     }
 }
 
-fn parse_ascii_data<R: BufRead>(
-    reader: &mut R,
-    header: &RawHeader,
-    _debug: i32,
-) -> Result<Vec<VectorData>> {
+fn parse_ascii_data<R: BufRead>(reader: &mut R, header: &RawHeader) -> Result<Vec<VectorData>> {
     let num_vars = header.num_variables;
     let num_points = header.num_points;
+
+    trace!(
+        num_vars = num_vars,
+        num_points = num_points,
+        complex = header.is_complex,
+        "Parsing ASCII data"
+    );
 
     if header.is_complex {
         let mut vectors: Vec<Vec<Complex64>> = vec![Vec::with_capacity(num_points); num_vars];

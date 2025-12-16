@@ -17,6 +17,7 @@ use num_complex::Complex64;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::Path;
+use tracing::{info, instrument, trace};
 
 /// Default chunk size (minimum number of time points per chunk)
 pub const DEFAULT_CHUNK_SIZE: usize = 10000;
@@ -82,6 +83,7 @@ impl HspiceStreamReader {
     /// Open a file for true streaming read
     ///
     /// Only parses the header. Data is read on-demand.
+    #[instrument(skip_all, fields(path = %path.as_ref().display()))]
     pub fn open<P: AsRef<Path>>(path: P, min_chunk_size: usize) -> Result<Self> {
         let file = File::open(path.as_ref())?;
         let mmap = unsafe { Mmap::map(&file)? };
@@ -95,6 +97,13 @@ impl HspiceStreamReader {
         } else {
             metadata.num_vectors
         };
+
+        info!(
+            signals = metadata.names.len(),
+            scale = %metadata.scale_name,
+            chunk_size = min_chunk_size,
+            "Stream reader opened"
+        );
 
         Ok(Self {
             mmap,
@@ -385,6 +394,13 @@ impl Iterator for HspiceStreamReader {
 
         match self.build_chunk(&chunk_rows) {
             Some(chunk) => {
+                trace!(
+                    chunk = self.current_chunk,
+                    points = chunk.data.values().next().map(|v| v.len()).unwrap_or(0),
+                    time_start = chunk.time_range.0,
+                    time_end = chunk.time_range.1,
+                    "Chunk built"
+                );
                 self.current_chunk += 1;
                 Some(Ok(chunk))
             }

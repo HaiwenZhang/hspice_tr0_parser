@@ -4,11 +4,56 @@
 //! from C, C++, and other languages that support C FFI.
 
 use hspice_core::{
-    read_debug, read_raw_debug, read_stream_chunked, DataChunk, HspiceStreamReader, VectorData,
-    WaveformResult,
+    read, read_raw, read_stream_chunked, DataChunk, HspiceStreamReader, VectorData, WaveformResult,
 };
 use std::ffi::{c_char, c_double, c_int, CStr, CString};
 use std::ptr;
+use std::sync::Once;
+
+// ============================================================================
+// Logging Initialization
+// ============================================================================
+
+static LOGGING_INIT: Once = Once::new();
+
+/// Initialize logging with specified level.
+///
+/// Call this once before any other waveform functions to enable logging.
+///
+/// # Arguments
+/// * `level` - Log level string: "trace", "debug", "info", "warn", "error"
+///
+/// # Returns
+/// * 0 on success
+/// * -1 if level string is null or invalid
+///
+/// # Example (C)
+/// ```c
+/// waveform_init_logging("info");
+/// void* result = waveform_read("simulation.tr0", 0);
+/// ```
+#[no_mangle]
+pub unsafe extern "C" fn waveform_init_logging(level: *const c_char) -> c_int {
+    if level.is_null() {
+        return -1;
+    }
+
+    let level_str = match CStr::from_ptr(level).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    LOGGING_INIT.call_once(|| {
+        use tracing_subscriber::EnvFilter;
+        let filter = EnvFilter::try_new(level_str).unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .init();
+    });
+
+    0
+}
 
 // ============================================================================
 // Opaque Types for C
@@ -30,10 +75,12 @@ pub struct CWaveformResult {
 // ============================================================================
 
 /// Read a waveform file and return a result handle.
+///
+/// The debug parameter is deprecated and ignored. Use waveform_init_logging() instead.
 #[no_mangle]
 pub unsafe extern "C" fn waveform_read(
     filename: *const c_char,
-    debug: c_int,
+    _debug: c_int,
 ) -> *mut CWaveformResult {
     if filename.is_null() {
         return ptr::null_mut();
@@ -44,7 +91,7 @@ pub unsafe extern "C" fn waveform_read(
         Err(_) => return ptr::null_mut(),
     };
 
-    match read_debug(filename_cstr, debug) {
+    match read(filename_cstr) {
         Ok(result) => {
             let cached_title = CString::new(result.title.clone()).unwrap_or_default();
             let cached_date = CString::new(result.date.clone()).unwrap_or_default();
@@ -70,9 +117,7 @@ pub unsafe extern "C" fn waveform_read(
             }))
         }
         Err(e) => {
-            if debug > 0 {
-                eprintln!("waveform_read error: {:?}", e);
-            }
+            tracing::error!("waveform_read error: {:?}", e);
             ptr::null_mut()
         }
     }
@@ -87,10 +132,12 @@ pub unsafe extern "C" fn waveform_free(result: *mut CWaveformResult) {
 }
 
 /// Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format).
+///
+/// The debug parameter is deprecated and ignored. Use waveform_init_logging() instead.
 #[no_mangle]
 pub unsafe extern "C" fn waveform_read_raw(
     filename: *const c_char,
-    debug: c_int,
+    _debug: c_int,
 ) -> *mut CWaveformResult {
     if filename.is_null() {
         return ptr::null_mut();
@@ -101,7 +148,7 @@ pub unsafe extern "C" fn waveform_read_raw(
         Err(_) => return ptr::null_mut(),
     };
 
-    match read_raw_debug(filename_cstr, debug) {
+    match read_raw(filename_cstr) {
         Ok(result) => {
             let cached_title = CString::new(result.title.clone()).unwrap_or_default();
             let cached_date = CString::new(result.date.clone()).unwrap_or_default();
@@ -127,9 +174,7 @@ pub unsafe extern "C" fn waveform_read_raw(
             }))
         }
         Err(e) => {
-            if debug > 0 {
-                eprintln!("waveform_read_raw error: {:?}", e);
-            }
+            tracing::error!("waveform_read_raw error: {:?}", e);
             ptr::null_mut()
         }
     }
@@ -414,11 +459,14 @@ pub struct CWaveformStream {
     scale_name: CString,
 }
 
+/// Open a file for streaming.
+///
+/// The debug parameter is deprecated and ignored. Use waveform_init_logging() instead.
 #[no_mangle]
 pub unsafe extern "C" fn waveform_stream_open(
     filename: *const c_char,
     chunk_size: c_int,
-    debug: c_int,
+    _debug: c_int,
 ) -> *mut CWaveformStream {
     if filename.is_null() || chunk_size <= 0 {
         return ptr::null_mut();
@@ -429,19 +477,16 @@ pub unsafe extern "C" fn waveform_stream_open(
         Err(_) => return ptr::null_mut(),
     };
 
-    if debug > 0 {
-        eprintln!(
-            "waveform_stream_open: {} (chunk_size={})",
-            filename_str, chunk_size
-        );
-    }
+    tracing::debug!(
+        "waveform_stream_open: {} (chunk_size={})",
+        filename_str,
+        chunk_size
+    );
 
     let reader = match read_stream_chunked(filename_str, chunk_size as usize) {
         Ok(r) => r,
         Err(e) => {
-            if debug > 0 {
-                eprintln!("stream open error: {:?}", e);
-            }
+            tracing::error!("stream open error: {:?}", e);
             return ptr::null_mut();
         }
     };
@@ -574,4 +619,10 @@ pub unsafe extern "C" fn hspice_read(
 #[no_mangle]
 pub unsafe extern "C" fn hspice_result_free(result: *mut CWaveformResult) {
     waveform_free(result)
+}
+
+/// Legacy alias for waveform_init_logging
+#[no_mangle]
+pub unsafe extern "C" fn hspice_init_logging(level: *const c_char) -> c_int {
+    waveform_init_logging(level)
 }

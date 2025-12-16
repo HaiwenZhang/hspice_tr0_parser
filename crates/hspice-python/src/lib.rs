@@ -7,6 +7,38 @@ use numpy::ndarray::Array1;
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use std::sync::Once;
+
+// ============================================================================
+// Logging Initialization
+// ============================================================================
+
+static LOGGING_INIT: Once = Once::new();
+
+/// Initialize logging with specified level.
+///
+/// Args:
+///     level: Log level ("trace", "debug", "info", "warn", "error")
+///
+/// Example:
+///     >>> import hspicetr0parser
+///     >>> hspicetr0parser.init_logging("info")
+///     >>> result = hspicetr0parser.read("simulation.tr0")
+#[pyfunction]
+#[pyo3(signature = (level="info"))]
+pub fn init_logging(level: &str) -> PyResult<()> {
+    use tracing_subscriber::EnvFilter;
+
+    LOGGING_INIT.call_once(|| {
+        let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .init();
+    });
+
+    Ok(())
+}
 
 // ============================================================================
 // Python Classes
@@ -199,19 +231,16 @@ fn vector_to_numpy(py: Python, vector: &VectorData) -> Py<PyAny> {
 ///
 /// Args:
 ///     filename: Path to the waveform file (.tr0, .ac0, .sw0)
-///     debug: Debug level (0=quiet, 1=info, 2=verbose)
 ///
 /// Returns:
 ///     WaveformResult object or None if failed
 #[pyfunction]
-#[pyo3(signature = (filename, debug=0))]
-pub fn read(_py: Python, filename: &str, debug: i32) -> PyResult<Option<PyWaveformResult>> {
-    match hspice_core::read_debug(filename, debug) {
+#[pyo3(signature = (filename))]
+pub fn read(_py: Python, filename: &str) -> PyResult<Option<PyWaveformResult>> {
+    match hspice_core::read(filename) {
         Ok(result) => Ok(Some(result.into())),
         Err(e) => {
-            if debug > 0 {
-                eprintln!("Read error: {:?}", e);
-            }
+            tracing::error!("Read error: {:?}", e);
             Ok(None)
         }
     }
@@ -219,19 +248,12 @@ pub fn read(_py: Python, filename: &str, debug: i32) -> PyResult<Option<PyWavefo
 
 /// Convert HSPICE file to SPICE3 raw format
 #[pyfunction]
-#[pyo3(signature = (input_path, output_path, debug=0))]
-pub fn convert_to_raw(
-    _py: Python,
-    input_path: &str,
-    output_path: &str,
-    debug: i32,
-) -> PyResult<bool> {
-    match hspice_core::read_and_convert_debug(input_path, output_path, debug) {
+#[pyo3(signature = (input_path, output_path))]
+pub fn convert_to_raw(_py: Python, input_path: &str, output_path: &str) -> PyResult<bool> {
+    match hspice_core::read_and_convert(input_path, output_path) {
         Ok(()) => Ok(true),
         Err(e) => {
-            if debug > 0 {
-                eprintln!("Conversion error: {:?}", e);
-            }
+            tracing::error!("Conversion error: {:?}", e);
             Ok(false)
         }
     }
@@ -239,28 +261,23 @@ pub fn convert_to_raw(
 
 /// Stream a large waveform file in chunks
 #[pyfunction]
-#[pyo3(signature = (filename, chunk_size=10000, signals=None, debug=0))]
+#[pyo3(signature = (filename, chunk_size=10000, signals=None))]
 pub fn stream(
     py: Python,
     filename: &str,
     chunk_size: usize,
     signals: Option<Vec<String>>,
-    debug: i32,
 ) -> PyResult<Py<PyList>> {
     use hspice_core::{read_stream_chunked, read_stream_signals};
 
-    if debug > 0 {
-        eprintln!("Opening stream: {} (chunk_size={})", filename, chunk_size);
-    }
+    tracing::debug!("Opening stream: {} (chunk_size={})", filename, chunk_size);
 
     let reader = if let Some(ref sigs) = signals {
         let sig_refs: Vec<&str> = sigs.iter().map(|s| s.as_str()).collect();
         match read_stream_signals(filename, &sig_refs, chunk_size) {
             Ok(r) => r,
             Err(e) => {
-                if debug > 0 {
-                    eprintln!("Stream open error: {:?}", e);
-                }
+                tracing::error!("Stream open error: {:?}", e);
                 return Ok(PyList::empty(py).unbind());
             }
         }
@@ -268,9 +285,7 @@ pub fn stream(
         match read_stream_chunked(filename, chunk_size) {
             Ok(r) => r,
             Err(e) => {
-                if debug > 0 {
-                    eprintln!("Stream open error: {:?}", e);
-                }
+                tracing::error!("Stream open error: {:?}", e);
                 return Ok(PyList::empty(py).unbind());
             }
         }
@@ -294,9 +309,7 @@ pub fn stream(
                 chunks_list.append(chunk_dict)?;
             }
             Err(e) => {
-                if debug > 0 {
-                    eprintln!("Stream chunk error: {:?}", e);
-                }
+                tracing::error!("Stream chunk error: {:?}", e);
                 break;
             }
         }
@@ -309,19 +322,16 @@ pub fn stream(
 ///
 /// Args:
 ///     filename: Path to the raw file (.raw)
-///     debug: Debug level (0=quiet, 1=info, 2=verbose)
 ///
 /// Returns:
 ///     WaveformResult object or None if failed
 #[pyfunction]
-#[pyo3(signature = (filename, debug=0))]
-pub fn read_raw(_py: Python, filename: &str, debug: i32) -> PyResult<Option<PyWaveformResult>> {
-    match hspice_core::read_raw_debug(filename, debug) {
+#[pyo3(signature = (filename))]
+pub fn read_raw(_py: Python, filename: &str) -> PyResult<Option<PyWaveformResult>> {
+    match hspice_core::read_raw(filename) {
         Ok(result) => Ok(Some(result.into())),
         Err(e) => {
-            if debug > 0 {
-                eprintln!("Read raw error: {:?}", e);
-            }
+            tracing::error!("Read raw error: {:?}", e);
             Ok(None)
         }
     }
@@ -334,6 +344,7 @@ pub fn read_raw(_py: Python, filename: &str, debug: i32) -> PyResult<Option<PyWa
 #[pymodule]
 pub fn hspicetr0parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Functions
+    m.add_function(wrap_pyfunction!(init_logging, m)?)?;
     m.add_function(wrap_pyfunction!(read, m)?)?;
     m.add_function(wrap_pyfunction!(read_raw, m)?)?;
     m.add_function(wrap_pyfunction!(convert_to_raw, m)?)?;
