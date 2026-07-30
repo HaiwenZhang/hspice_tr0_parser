@@ -1,22 +1,21 @@
-//! HSPICE binary file parser
+//! HSPICE binary file parser.
 
-use crate::reader::MmapReader;
-use crate::types::*;
-use memmap2::Mmap;
-use num_complex::Complex64;
 use std::fs::File;
 use std::path::Path;
-use tracing::{debug, info, instrument, trace, warn};
 
-// ============================================================================
-// Internal Types
-// ============================================================================
+use memmap2::Mmap;
+use tracing::{debug, info, instrument, trace};
 
-/// Internal buffer for building signal vectors during parsing
-enum VectorBuilder {
-    Real(Vec<f64>),
-    Complex(Vec<Complex64>),
-}
+use crate::data_builder::DataTableBuilder;
+use crate::reader::MmapReader;
+use crate::types::{
+    AnalysisType, DataTable, PostVersion, Result, Variable, WaveformError, WaveformResult,
+    COMPLEX_VAR, DATE_END_POSITION, DATE_START_POSITION, FREQUENCY_TYPE, NUM_OF_PROBES_POSITION,
+    NUM_OF_SWEEPS_END_POSITION, NUM_OF_SWEEPS_POSITION, NUM_OF_VARIABLES_POSITION,
+    POST_START_POSITION1, POST_START_POSITION2, POST_STRING11, POST_STRING12, POST_STRING21,
+    REAL_VAR, SWEEP_SIZE_POSITION1, SWEEP_SIZE_POSITION2, TITLE_START_POSITION,
+    VECTOR_DESCRIPTION_START_POSITION,
+};
 
 /// Find subsequence in a byte slice
 #[inline]
@@ -46,27 +45,6 @@ fn read_header_blocks(reader: &mut MmapReader) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
-/// Read data blocks until end marker found - unified for all formats
-fn read_data_blocks(reader: &mut MmapReader, version: PostVersion) -> Result<Vec<f64>> {
-    use crate::block_reader::BlockReader;
-
-    // Get remaining bytes for BlockReader
-    let remaining = reader.remaining();
-    let data_slice = &reader.read_bytes(remaining)?;
-
-    let mut block_reader = BlockReader::new(data_slice, version);
-    let raw_data = block_reader.read_all()?;
-
-    debug!(
-        blocks = block_reader.block_count(),
-        format = block_reader.format_name(),
-        values = raw_data.len(),
-        "Read data blocks"
-    );
-
-    Ok(raw_data)
-}
-
 // ============================================================================
 // String extraction utilities
 // ============================================================================
@@ -84,8 +62,11 @@ fn extract_string(buf: &[u8], start: usize, end: usize) -> String {
 }
 
 #[inline]
-fn extract_int(buf: &[u8], start: usize, end: usize) -> i32 {
-    extract_string(buf, start, end).trim().parse().unwrap_or(0)
+fn extract_int(buf: &[u8], start: usize, end: usize, field: &str) -> Result<i32> {
+    let value = extract_string(buf, start, end);
+    value.trim().parse().map_err(|error| {
+        WaveformError::ParseError(format!("invalid {field} value {value:?}: {error}"))
+    })
 }
 
 // ============================================================================
@@ -125,28 +106,38 @@ fn parse_vector_names(buf: &[u8], num_vectors: usize) -> Result<(String, Vec<Str
 
     let names: Vec<String> = ((num_vectors + 1)..(2 * num_vectors))
         .filter_map(|i| tokens.get(i))
-        .map(|name| {
-            let mut name = name.to_lowercase();
-            if name.starts_with("v(") {
-                name = name[2..].trim_end_matches(')').to_string();
-            }
-            name
-        })
+        .map(|name| (*name).to_owned())
         .collect();
 
     Ok((scale_name, names))
 }
 
 /// Get sweep info from header tokens
-fn get_sweep_info(buf: &[u8], tokens: &[&str], num_vectors: usize) -> Option<(String, i32)> {
-    let sweep_name = tokens.get(2 * num_vectors)?.to_string();
+fn get_sweep_info(
+    buf: &[u8],
+    tokens: &[&str],
+    num_vectors: usize,
+) -> Result<Option<(String, i32)>> {
+    let Some(sweep_name) = tokens.get(2 * num_vectors) else {
+        return Ok(None);
+    };
     let post_str = extract_string(buf, POST_START_POSITION2, POST_START_POSITION2 + 4);
     let sweep_size = if post_str == POST_STRING21 {
-        extract_int(buf, SWEEP_SIZE_POSITION2, SWEEP_SIZE_POSITION2 + 10)
+        extract_int(
+            buf,
+            SWEEP_SIZE_POSITION2,
+            SWEEP_SIZE_POSITION2 + 10,
+            "sweep size",
+        )?
     } else {
-        extract_int(buf, SWEEP_SIZE_POSITION1, SWEEP_SIZE_POSITION1 + 10)
+        extract_int(
+            buf,
+            SWEEP_SIZE_POSITION1,
+            SWEEP_SIZE_POSITION1 + 10,
+            "sweep size",
+        )?
     };
-    Some((sweep_name, sweep_size))
+    Ok(Some(((*sweep_name).to_owned(), sweep_size)))
 }
 
 /// Parse all header metadata from buffer
@@ -178,25 +169,41 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
         header_buf,
         NUM_OF_SWEEPS_POSITION,
         NUM_OF_SWEEPS_END_POSITION,
-    );
+        "number of sweeps",
+    )?;
     if !(0..=1).contains(&num_sweeps) {
         return Err(WaveformError::FormatError(
             "Only one-dimensional sweep supported".into(),
         ));
     }
 
-    let num_probes = extract_int(header_buf, NUM_OF_PROBES_POSITION, NUM_OF_SWEEPS_POSITION);
+    let num_probes = extract_int(
+        header_buf,
+        NUM_OF_PROBES_POSITION,
+        NUM_OF_SWEEPS_POSITION,
+        "number of probes",
+    )?;
     let num_variables = extract_int(
         header_buf,
         NUM_OF_VARIABLES_POSITION,
         NUM_OF_PROBES_POSITION,
-    );
-    let num_vectors = (num_probes + num_variables) as usize;
+        "number of variables",
+    )?;
+    let num_vectors_i32 = num_probes
+        .checked_add(num_variables)
+        .ok_or_else(|| WaveformError::FormatError("vector count overflow".into()))?;
+    let num_vectors = usize::try_from(num_vectors_i32).map_err(|_| {
+        WaveformError::FormatError(format!("invalid vector count: {num_vectors_i32}"))
+    })?;
 
     let desc_section = &header_buf[VECTOR_DESCRIPTION_START_POSITION..];
     let desc_str = String::from_utf8_lossy(desc_section);
     let tokens: Vec<&str> = desc_str.split_whitespace().collect();
-    let var_type_num: i32 = tokens.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let var_type_num = tokens
+        .first()
+        .ok_or_else(|| WaveformError::ParseError("missing variable type".into()))?
+        .parse::<i32>()
+        .map_err(|error| WaveformError::ParseError(format!("invalid variable type: {error}")))?;
     let var_type = if var_type_num == FREQUENCY_TYPE {
         COMPLEX_VAR
     } else {
@@ -206,8 +213,8 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
     let (scale_name, names) = parse_vector_names(header_buf, num_vectors)?;
 
     let (sweep_name, sweep_size) = if num_sweeps == 1 {
-        get_sweep_info(header_buf, &tokens, num_vectors)
-            .map(|(n, s)| (Some(n), s.max(1)))
+        get_sweep_info(header_buf, &tokens, num_vectors)?
+            .map(|(name, size)| (Some(name), size.max(1)))
             .unwrap_or((None, 1))
     } else {
         (None, 1)
@@ -227,118 +234,86 @@ fn parse_header_metadata(header_buf: &[u8]) -> Result<HeaderMetadata> {
     })
 }
 
-// ============================================================================
-// Data processing
-// ============================================================================
-
-/// Layout parameters for parsing raw data rows
-struct DataLayout {
-    num_rows: usize,
-    data_start: usize,
-    sweep_value: Option<f64>,
-    num_complex_signals: usize,
+/// Estimate rows before decoding so every output vector allocates only once.
+/// Record headers make this a small overestimate, which is preferable to
+/// reallocating gigabyte-scale vectors.
+fn estimate_table_rows(
+    data_bytes: usize,
+    version: PostVersion,
+    num_columns: usize,
+    remaining_sweeps: usize,
+) -> usize {
+    if num_columns == 0 {
+        return 0;
+    }
+    let item_size = match version {
+        PostVersion::V9601 => 4,
+        PostVersion::V2001 => 8,
+    };
+    data_bytes / remaining_sweeps.max(1) / item_size / num_columns
 }
 
-impl DataLayout {
-    fn new(
-        raw_data: &[f64],
-        num_vectors: usize,
-        num_variables: i32,
-        var_type: i32,
-        has_sweep: bool,
-    ) -> Self {
-        let num_columns = if var_type == COMPLEX_VAR {
-            num_vectors + (num_variables - 1) as usize
+/// Read one table directly into its final vectors.
+fn read_data_table(
+    reader: &mut MmapReader,
+    meta: &HeaderMetadata,
+    remaining_sweeps: usize,
+) -> Result<DataTable> {
+    use crate::block_reader::BlockReader;
+
+    let (table, consumed, blocks, format, trailing_values) = {
+        let data = reader.remaining_bytes();
+        let num_columns = if meta.var_type == COMPLEX_VAR {
+            meta.num_vectors
+                + usize::try_from(meta.num_variables - 1).map_err(|_| {
+                    WaveformError::FormatError(format!(
+                        "invalid complex variable count: {}",
+                        meta.num_variables
+                    ))
+                })?
         } else {
-            num_vectors
+            meta.num_vectors
         };
-        let data_offset = if has_sweep { 2 } else { 1 };
-        let num_rows = raw_data.len().saturating_sub(data_offset) / num_columns.max(1);
-        let data_start = if has_sweep { 1 } else { 0 };
-        let sweep_value = if has_sweep {
-            raw_data.first().copied()
-        } else {
-            None
-        };
-        let num_complex_signals = if var_type == COMPLEX_VAR {
-            (num_variables - 1) as usize
-        } else {
-            0
-        };
-        Self {
-            num_rows,
-            data_start,
-            sweep_value,
+        let capacity =
+            estimate_table_rows(data.len(), meta.post_version, num_columns, remaining_sweeps);
+        let num_complex_signals = num_columns - meta.num_vectors;
+        let mut table_builder = DataTableBuilder::new(
+            meta.post_version,
+            meta.num_vectors,
             num_complex_signals,
-        }
-    }
+            meta.sweep_name.is_some(),
+            capacity,
+        );
+        let mut block_reader = BlockReader::new(data, meta.post_version);
 
-    fn is_complex_signal(&self, index: usize) -> bool {
-        index < self.num_complex_signals
-    }
-}
-
-impl VectorBuilder {
-    fn push_value(&mut self, raw_data: &[f64], pos: &mut usize, is_complex: bool) {
-        match self {
-            VectorBuilder::Complex(vec) if is_complex => {
-                vec.push(Complex64::new(raw_data[*pos], raw_data[*pos + 1]));
-                *pos += 2;
+        while let Some(block) = block_reader.next_raw_block()? {
+            table_builder.push_raw_block(block.bytes, block.endian, block.is_end);
+            if block.is_end {
+                break;
             }
-            VectorBuilder::Real(vec) => {
-                vec.push(raw_data[*pos]);
-                *pos += 1;
-            }
-            _ => *pos += 1,
         }
-    }
 
-    fn into_vector_data(self) -> VectorData {
-        match self {
-            VectorBuilder::Real(vec) => VectorData::Real(vec),
-            VectorBuilder::Complex(vec) => VectorData::Complex(vec),
-        }
-    }
-}
+        let trailing_values = table_builder.trailing_value_count();
+        (
+            table_builder.finish(),
+            block_reader.bytes_consumed(),
+            block_reader.block_count(),
+            block_reader.format_name(),
+            trailing_values,
+        )
+    };
 
-/// Process raw data into vectors
-fn process_raw_data(
-    raw_data: &[f64],
-    num_vectors: usize,
-    num_variables: i32,
-    var_type: i32,
-    has_sweep: bool,
-) -> (Option<f64>, Vec<VectorData>) {
-    let layout = DataLayout::new(raw_data, num_vectors, num_variables, var_type, has_sweep);
+    reader.advance(consumed)?;
 
-    // Pre-allocate buffers
-    let mut scale_vec = Vec::with_capacity(layout.num_rows);
-    let mut signal_bufs: Vec<VectorBuilder> = (0..num_vectors - 1)
-        .map(|i| {
-            if layout.is_complex_signal(i) {
-                VectorBuilder::Complex(Vec::with_capacity(layout.num_rows))
-            } else {
-                VectorBuilder::Real(Vec::with_capacity(layout.num_rows))
-            }
-        })
-        .collect();
+    debug!(
+        blocks,
+        format,
+        points = table.len(),
+        trailing_values,
+        "Read data table"
+    );
 
-    // Single pass through raw data
-    let mut pos = layout.data_start;
-    for _ in 0..layout.num_rows {
-        scale_vec.push(raw_data[pos]);
-        pos += 1;
-        for (i, buf) in signal_bufs.iter_mut().enumerate() {
-            buf.push_value(raw_data, &mut pos, layout.is_complex_signal(i));
-        }
-    }
-
-    // Build final vectors
-    let mut vectors = Vec::with_capacity(num_vectors);
-    vectors.push(VectorData::Real(scale_vec));
-    vectors.extend(signal_bufs.into_iter().map(VectorBuilder::into_vector_data));
-
-    (layout.sweep_value, vectors)
+    Ok(table)
 }
 
 // ============================================================================
@@ -346,11 +321,11 @@ fn process_raw_data(
 // ============================================================================
 
 /// Validate file format before parsing
-fn validate_file_format(mmap: &Mmap) -> Result<()> {
-    if mmap.is_empty() {
+fn validate_file_format(data: &[u8]) -> Result<()> {
+    if data.is_empty() {
         return Err(WaveformError::FormatError("File is empty".into()));
     }
-    if mmap[0] >= b' ' {
+    if data[0] >= b' ' {
         return Err(WaveformError::FormatError(
             "File is ASCII format, only binary supported".into(),
         ));
@@ -360,13 +335,16 @@ fn validate_file_format(mmap: &Mmap) -> Result<()> {
 
 /// Parse only the header, return metadata and data start position
 pub fn parse_header_only(mmap: &Mmap) -> Result<(HeaderMetadata, usize)> {
-    validate_file_format(mmap)?;
+    parse_header_from_bytes(mmap)
+}
 
-    let mut reader = MmapReader::new(mmap);
+fn parse_header_from_bytes(data: &[u8]) -> Result<(HeaderMetadata, usize)> {
+    validate_file_format(data)?;
+    let mut reader = MmapReader::new(data);
     let header_buf = read_header_blocks(&mut reader)?;
     let metadata = parse_header_metadata(&header_buf)?;
 
-    let data_position = mmap.len() - reader.remaining();
+    let data_position = data.len() - reader.remaining();
     Ok((metadata, data_position))
 }
 
@@ -385,15 +363,31 @@ pub fn hspice_read_impl(filename: &str) -> Result<WaveformResult> {
     info!("Reading HSPICE file");
 
     let file = File::open(filename)?;
+    // SAFETY: the returned read-only mapping owns its OS mapping and is not
+    // mutated through this process while parsing.
     let mmap = unsafe { Mmap::map(&file)? };
+    #[cfg(unix)]
+    if let Err(error) = mmap.advise(memmap2::Advice::Sequential) {
+        trace!(%error, "Could not set sequential mapping advice");
+    }
 
     let file_size = mmap.len();
     let file_size_mb = file_size as f64 / 1_048_576.0;
     debug!(size_bytes = file_size, size_mb = %format!("{:.2}", file_size_mb), "File mapped");
 
-    validate_file_format(&mmap)?;
+    parse_hspice_bytes(&mmap, filename)
+}
 
-    let mut reader = MmapReader::new(&mmap);
+/// Parses HSPICE bytes using a filename only as an analysis-type hint.
+pub(crate) fn hspice_read_bytes_impl(data: &[u8], filename_hint: &str) -> Result<WaveformResult> {
+    info!("Reading HSPICE data from memory");
+    parse_hspice_bytes(data, filename_hint)
+}
+
+fn parse_hspice_bytes(data: &[u8], filename_hint: &str) -> Result<WaveformResult> {
+    validate_file_format(data)?;
+
+    let mut reader = MmapReader::new(data);
     let header_buf = read_header_blocks(&mut reader)?;
     let meta = parse_header_metadata(&header_buf)?;
 
@@ -416,7 +410,7 @@ pub fn hspice_read_impl(filename: &str) -> Result<WaveformResult> {
         if from_scale != AnalysisType::Unknown {
             from_scale
         } else {
-            infer_analysis_type(filename)
+            infer_analysis_type(filename_hint)
         }
     };
     debug!(analysis = %analysis, "Analysis type inferred");
@@ -430,33 +424,21 @@ pub fn hspice_read_impl(filename: &str) -> Result<WaveformResult> {
     trace!(count = variables.len(), "Variables built");
 
     // Read data tables
-    let mut tables = Vec::with_capacity(meta.sweep_size as usize);
+    let sweep_count = usize::try_from(meta.sweep_size).map_err(|_| {
+        WaveformError::FormatError(format!("invalid sweep count: {}", meta.sweep_size))
+    })?;
+    let mut tables = Vec::with_capacity(sweep_count);
 
-    for sweep_idx in 0..meta.sweep_size {
-        trace!(
-            sweep = sweep_idx + 1,
-            total = meta.sweep_size,
-            "Reading sweep"
-        );
+    for sweep_idx in 0..sweep_count {
+        trace!(sweep = sweep_idx + 1, total = sweep_count, "Reading sweep");
 
-        let raw_data = read_data_blocks(&mut reader, meta.post_version)?;
-        let (sweep_value, vectors) = process_raw_data(
-            &raw_data,
-            meta.num_vectors,
-            meta.num_variables,
-            meta.var_type,
-            meta.sweep_name.is_some(),
-        );
-
-        tables.push(DataTable {
-            sweep_value,
-            vectors,
-        });
+        let remaining_sweeps = sweep_count - sweep_idx;
+        tables.push(read_data_table(&mut reader, &meta, remaining_sweeps)?);
     }
 
     info!(
         tables = tables.len(),
-        points = tables.first().map(|t| t.len()).unwrap_or(0),
+        points = tables.first().map_or(0, DataTable::len),
         "Parsing complete"
     );
 
@@ -468,4 +450,100 @@ pub fn hspice_read_impl(filename: &str) -> Result<WaveformResult> {
         sweep_param: meta.sweep_name,
         tables,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{VarType, VectorData, END_MARKER_9601};
+
+    fn append_f32_block(bytes: &mut Vec<u8>, values: &[f32]) {
+        let byte_count = (values.len() * 4) as i32;
+        for value in [4_i32, byte_count, 4_i32, byte_count] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&byte_count.to_le_bytes());
+    }
+
+    fn real_sweep_metadata() -> HeaderMetadata {
+        HeaderMetadata {
+            title: String::new(),
+            date: String::new(),
+            post_version: PostVersion::V9601,
+            num_variables: 2,
+            num_vectors: 3,
+            var_type: REAL_VAR,
+            scale_name: "TIME".into(),
+            names: vec!["a".into(), "b".into()],
+            sweep_name: Some("corner".into()),
+            sweep_size: 2,
+        }
+    }
+
+    #[test]
+    fn parse_vector_names_preserves_voltage_descriptor_exactly() {
+        let mut header = vec![b' '; VECTOR_DESCRIPTION_START_POSITION];
+        header.extend_from_slice(b"1 1 TIME V(Out");
+
+        let (_, names) = parse_vector_names(&header, 2).unwrap();
+
+        assert_eq!(names, ["V(Out"]);
+    }
+
+    #[test]
+    fn parse_vector_names_preserves_current_descriptor_exactly() {
+        let mut header = vec![b' '; VECTOR_DESCRIPTION_START_POSITION];
+        header.extend_from_slice(b"1 1 TIME i(VDD");
+
+        let (_, names) = parse_vector_names(&header, 2).unwrap();
+
+        assert_eq!(names, ["i(VDD"]);
+    }
+
+    #[test]
+    fn preserved_voltage_descriptor_infers_voltage_type() {
+        let mut header = vec![b' '; VECTOR_DESCRIPTION_START_POSITION];
+        header.extend_from_slice(b"1 1 TIME V(Out");
+        let (_, names) = parse_vector_names(&header, 2).unwrap();
+
+        let variable = Variable::new(&names[0]);
+
+        assert_eq!(variable.var_type, VarType::Voltage);
+    }
+
+    #[test]
+    fn reads_multiple_sweep_tables_without_consuming_following_table() {
+        let mut bytes = Vec::new();
+        append_f32_block(
+            &mut bytes,
+            &[1.0, 0.0, 10.0, 20.0, 1.0, 11.0, 21.0, END_MARKER_9601],
+        );
+        append_f32_block(
+            &mut bytes,
+            &[2.0, 2.0, 12.0, 22.0, 3.0, 13.0, 23.0, END_MARKER_9601],
+        );
+
+        let meta = real_sweep_metadata();
+        let mut reader = MmapReader::new(&bytes);
+        let first = read_data_table(&mut reader, &meta, 2).unwrap();
+        let second = read_data_table(&mut reader, &meta, 1).unwrap();
+
+        assert_eq!(first.sweep_value, Some(1.0));
+        assert_eq!(second.sweep_value, Some(2.0));
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        assert_eq!(reader.remaining(), 0);
+
+        let VectorData::Real(first_time) = &first.vectors[0] else {
+            panic!("expected real scale");
+        };
+        let VectorData::Real(second_b) = &second.vectors[2] else {
+            panic!("expected real signal");
+        };
+        assert_eq!(first_time, &[0.0, 1.0]);
+        assert_eq!(second_b, &[22.0, 23.0]);
+    }
 }

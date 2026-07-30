@@ -31,7 +31,7 @@ console.log(`Points: ${result.numPoints}`);
 
 // Access signal data
 const time = result.tables[0].signals["TIME"];
-const vout = result.tables[0].signals["v(out)"];
+const vout = result.tables[0].signals["v(out"];
 ```
 
 ### Get Signal Names
@@ -40,7 +40,7 @@ const vout = result.tables[0].signals["v(out)"];
 import { getSignalNames } from "hspice-wasm";
 
 const names = getSignalNames(fileData);
-// ["TIME", "v(out)", "i(vin)", ...]
+// ["TIME", "v(out", "i(vin", ...]
 ```
 
 ### Get Single Signal

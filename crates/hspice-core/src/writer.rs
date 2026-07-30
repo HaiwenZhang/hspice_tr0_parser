@@ -1,9 +1,11 @@
-//! SPICE3 Binary Raw File Writer
+//! SPICE3 binary raw-file writer.
 
-use crate::types::{AnalysisType, Result, VectorData, WaveformError, WaveformResult};
 use std::fs::File;
 use std::io::{BufWriter, Write};
+
 use tracing::{debug, info, instrument};
+
+use crate::types::{AnalysisType, DataTable, Result, VectorData, WaveformError, WaveformResult};
 
 /// Write SPICE3 binary raw file header
 fn write_raw_header<W: Write>(
@@ -15,22 +17,24 @@ fn write_raw_header<W: Write>(
     num_points: usize,
     is_complex: bool,
 ) -> Result<()> {
-    // Write text header
-    writeln!(writer, "Title: {}", title)?;
-    writeln!(writer, "Date: {}", date)?;
-    writeln!(writer, "Plotname: {}", plot_name)?;
+    writeln!(writer, "Title: {title}")?;
+    writeln!(writer, "Date: {date}")?;
+    writeln!(writer, "Plotname: {plot_name}")?;
     writeln!(
         writer,
         "Flags: {}",
         if is_complex { "complex" } else { "real" }
     )?;
     writeln!(writer, "No. Variables: {}", result.variables.len())?;
-    writeln!(writer, "No. Points: {}", num_points)?;
+    writeln!(writer, "No. Points: {num_points}")?;
     writeln!(writer, "Variables:")?;
 
-    // Write variables
-    for (i, var) in result.variables.iter().enumerate() {
-        writeln!(writer, "\t{}\t{}\t{}", i, var.name, var.var_type)?;
+    for (index, variable) in result.variables.iter().enumerate() {
+        writeln!(
+            writer,
+            "\t{index}\t{}\t{}",
+            variable.name, variable.var_type
+        )?;
     }
 
     writeln!(writer, "Binary:")?;
@@ -41,22 +45,34 @@ fn write_raw_header<W: Write>(
 /// Write SPICE3 binary data section
 fn write_raw_data<W: Write>(
     writer: &mut W,
-    table: &crate::types::DataTable,
+    table: &DataTable,
     num_points: usize,
+    is_complex: bool,
 ) -> Result<()> {
-    for i in 0..num_points {
+    for point_index in 0..num_points {
         for vector in &table.vectors {
-            match vector {
-                VectorData::Real(data) => {
-                    let val = data.get(i).copied().unwrap_or(0.0);
-                    writer.write_all(&val.to_le_bytes())?;
+            let (real, imaginary) = match vector {
+                VectorData::Real(values) => {
+                    let value = values.get(point_index).ok_or_else(|| {
+                        WaveformError::FormatError(format!(
+                            "real vector is missing point {point_index}"
+                        ))
+                    })?;
+                    (*value, 0.0)
                 }
-                VectorData::Complex(data) => {
-                    // SPICE3 complex format: write real part then imaginary part (16 bytes total)
-                    let c = data.get(i).copied().unwrap_or_default();
-                    writer.write_all(&c.re.to_le_bytes())?;
-                    writer.write_all(&c.im.to_le_bytes())?;
+                VectorData::Complex(values) => {
+                    let value = values.get(point_index).ok_or_else(|| {
+                        WaveformError::FormatError(format!(
+                            "complex vector is missing point {point_index}"
+                        ))
+                    })?;
+                    (value.re, value.im)
                 }
+            };
+            writer.write_all(&real.to_le_bytes())?;
+            if is_complex {
+                // SPICE3's complex flag applies to every variable, including scale.
+                writer.write_all(&imaginary.to_le_bytes())?;
             }
         }
     }
@@ -64,12 +80,15 @@ fn write_raw_data<W: Write>(
     Ok(())
 }
 
-/// Convert WaveformResult to SPICE3 binary raw format
+/// Converts a [`WaveformResult`] to SPICE3 binary raw format.
+///
+/// # Errors
+///
+/// Returns an error if the result is inconsistent or the output cannot be written.
 #[instrument(skip(result), fields(output = %output_path))]
 pub fn write_spice3_raw(result: &WaveformResult, output_path: &str) -> Result<()> {
     info!("Writing SPICE3 raw file");
 
-    // Get the first data table
     let table = result
         .tables
         .first()
@@ -80,8 +99,25 @@ pub fn write_spice3_raw(result: &WaveformResult, output_path: &str) -> Result<()
 
     debug!(points = num_points, variables = num_vars, "Data info");
 
-    // Check for complex data
-    let is_complex = table.vectors.iter().any(|v| v.is_complex());
+    if table.vectors.len() != num_vars {
+        return Err(WaveformError::FormatError(format!(
+            "variable count ({num_vars}) does not match vector count ({})",
+            table.vectors.len()
+        )));
+    }
+    if let Some((index, length)) = table
+        .vectors
+        .iter()
+        .enumerate()
+        .map(|(index, vector)| (index, vector.len()))
+        .find(|(_, length)| *length != num_points)
+    {
+        return Err(WaveformError::FormatError(format!(
+            "vector {index} has {length} points; expected {num_points}"
+        )));
+    }
+
+    let is_complex = table.vectors.iter().any(VectorData::is_complex);
 
     // Create output file
     let file = File::create(output_path)?;
@@ -108,8 +144,7 @@ pub fn write_spice3_raw(result: &WaveformResult, output_path: &str) -> Result<()
         is_complex,
     )?;
 
-    // Write binary data
-    write_raw_data(&mut writer, table, num_points)?;
+    write_raw_data(&mut writer, table, num_points, is_complex)?;
 
     writer.flush()?;
 
@@ -130,4 +165,51 @@ pub fn hspice_to_raw_impl(input_path: &str, output_path: &str) -> Result<()> {
     info!("Conversion complete");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use num_complex::Complex64;
+
+    use super::*;
+    use crate::raw_parser::read_raw_bytes;
+    use crate::types::{VarType, Variable};
+
+    #[test]
+    fn complex_round_trip_preserves_scale_and_signal() -> Result<()> {
+        let path =
+            std::env::temp_dir().join(format!("hspice_writer_complex_{}.raw", std::process::id()));
+        let result = WaveformResult {
+            title: "complex round trip".into(),
+            date: String::new(),
+            analysis: AnalysisType::AC,
+            variables: vec![
+                Variable::with_type("frequency", VarType::Frequency),
+                Variable::with_type("v(out)", VarType::Voltage),
+            ],
+            sweep_param: None,
+            tables: vec![DataTable {
+                sweep_value: None,
+                vectors: vec![
+                    VectorData::Real(vec![1.0, 2.0]),
+                    VectorData::Complex(vec![Complex64::new(3.0, 4.0), Complex64::new(5.0, 6.0)]),
+                ],
+            }],
+        };
+
+        write_spice3_raw(&result, path.to_string_lossy().as_ref())?;
+        let bytes = std::fs::read(&path)?;
+        let decoded = read_raw_bytes(&bytes)?;
+        std::fs::remove_file(path)?;
+
+        assert!(matches!(
+            decoded.tables[0].vectors.as_slice(),
+            [
+                VectorData::Complex(scale),
+                VectorData::Complex(signal)
+            ] if scale == &[Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)]
+                && signal == &[Complex64::new(3.0, 4.0), Complex64::new(5.0, 6.0)]
+        ));
+        Ok(())
+    }
 }

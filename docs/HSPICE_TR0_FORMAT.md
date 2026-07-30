@@ -148,7 +148,8 @@ Where:
   - `2` = Frequency domain (complex values)
 - `internal_names`: Internal variable identifiers (same count as variables)
 - `scale_name`: Independent variable name (e.g., "TIME", "HERTZ")
-- `signal_names`: Human-readable signal names (e.g., "v(out)", "i(vdd)")
+- `signal_names`: Signal descriptors exactly as stored (e.g., `v(out`, `i(vdd`;
+  HSPICE omits the closing parenthesis)
 - `$&%#`: End-of-header marker
 
 ## Data Blocks

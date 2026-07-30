@@ -1,10 +1,7 @@
-//! WebAssembly bindings for waveform file parser
-//!
-//! Provides JavaScript-friendly API for parsing HSPICE binary files in the browser.
+//! WebAssembly bindings for the waveform parser.
 
 use hspice_core::{AnalysisType, VarType, VectorData, WaveformResult};
 use js_sys::{Array, Float64Array, Object, Reflect};
-use std::io::Write;
 use wasm_bindgen::prelude::*;
 
 // ============================================================================
@@ -50,7 +47,11 @@ pub fn get_signal_data(data: &[u8], signal_name: &str) -> Result<JsValue, JsValu
         .first()
         .ok_or_else(|| JsValue::from_str("No data tables"))?;
 
-    vector_to_js(&table.vectors[idx])
+    let vector = table
+        .vectors
+        .get(idx)
+        .ok_or_else(|| JsValue::from_str("Signal metadata and data are inconsistent"))?;
+    Ok(vector_to_js(vector))
 }
 
 // ============================================================================
@@ -75,64 +76,25 @@ pub fn parse_raw(data: &[u8]) -> Result<JsValue, JsValue> {
 // ============================================================================
 
 fn parse_raw_from_bytes(data: &[u8]) -> Result<WaveformResult, JsValue> {
-    // Create temp file for parsing
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join("raw_wasm_temp.raw");
-
-    let mut file = std::fs::File::create(&temp_path)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create temp file: {}", e)))?;
-
-    file.write_all(data)
-        .map_err(|e| JsValue::from_str(&format!("Failed to write data: {}", e)))?;
-
-    drop(file);
-
-    let temp_path_str = temp_path
-        .to_str()
-        .ok_or_else(|| JsValue::from_str("Invalid temp path"))?;
-
-    let result = hspice_core::read_raw(temp_path_str)
-        .map_err(|e| JsValue::from_str(&format!("Parse raw error: {:?}", e)))?;
-
-    // Cleanup
-    let _ = std::fs::remove_file(&temp_path);
-
-    Ok(result)
+    hspice_core::read_raw_bytes(data)
+        .map_err(|error| JsValue::from_str(&format!("Parse raw error: {error}")))
 }
 
 fn parse_from_bytes(data: &[u8]) -> Result<WaveformResult, JsValue> {
-    // Create temp file for parsing (WASM can't access filesystem)
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join("hspice_wasm_temp.tr0");
-
-    let mut file = std::fs::File::create(&temp_path)
-        .map_err(|e| JsValue::from_str(&format!("Failed to create temp file: {}", e)))?;
-
-    file.write_all(data)
-        .map_err(|e| JsValue::from_str(&format!("Failed to write data: {}", e)))?;
-
-    drop(file);
-
-    let temp_path_str = temp_path
-        .to_str()
-        .ok_or_else(|| JsValue::from_str("Invalid temp path"))?;
-
-    let result = hspice_core::read(temp_path_str)
-        .map_err(|e| JsValue::from_str(&format!("Parse error: {:?}", e)))?;
-
-    // Cleanup
-    let _ = std::fs::remove_file(&temp_path);
-
-    Ok(result)
+    hspice_core::read_bytes(data, "waveform.tr0")
+        .map_err(|error| JsValue::from_str(&format!("Parse error: {error}")))
 }
 
 fn create_js_result(data: &WaveformResult) -> Result<JsValue, JsValue> {
     let result = Object::new();
 
-    // Metadata
-    Reflect::set(&result, &"title".into(), &data.title.clone().into())?;
-    Reflect::set(&result, &"date".into(), &data.date.clone().into())?;
-    Reflect::set(&result, &"scaleName".into(), &data.scale_name().into())?;
+    Reflect::set(&result, &"title".into(), &JsValue::from_str(&data.title))?;
+    Reflect::set(&result, &"date".into(), &JsValue::from_str(&data.date))?;
+    Reflect::set(
+        &result,
+        &"scaleName".into(),
+        &JsValue::from_str(data.scale_name()),
+    )?;
 
     // Analysis type
     let analysis = match data.analysis {
@@ -149,7 +111,7 @@ fn create_js_result(data: &WaveformResult) -> Result<JsValue, JsValue> {
     let variables = Array::new();
     for var in &data.variables {
         let var_obj = Object::new();
-        Reflect::set(&var_obj, &"name".into(), &var.name.clone().into())?;
+        Reflect::set(&var_obj, &"name".into(), &JsValue::from_str(&var.name))?;
         let var_type = match var.var_type {
             VarType::Time => "time",
             VarType::Frequency => "frequency",
@@ -164,7 +126,7 @@ fn create_js_result(data: &WaveformResult) -> Result<JsValue, JsValue> {
 
     // Sweep info
     match &data.sweep_param {
-        Some(name) => Reflect::set(&result, &"sweepParam".into(), &name.clone().into())?,
+        Some(name) => Reflect::set(&result, &"sweepParam".into(), &JsValue::from_str(name))?,
         None => Reflect::set(&result, &"sweepParam".into(), &JsValue::NULL)?,
     };
 
@@ -182,8 +144,8 @@ fn create_js_result(data: &WaveformResult) -> Result<JsValue, JsValue> {
         // Data as object {name: Float64Array}
         let signals = Object::new();
         for (var, vector) in data.variables.iter().zip(table.vectors.iter()) {
-            let js_array = vector_to_js(vector)?;
-            Reflect::set(&signals, &var.name.clone().into(), &js_array)?;
+            let js_array = vector_to_js(vector);
+            Reflect::set(&signals, &JsValue::from_str(&var.name), &js_array)?;
         }
         Reflect::set(&table_obj, &"signals".into(), &signals)?;
 
@@ -192,33 +154,31 @@ fn create_js_result(data: &WaveformResult) -> Result<JsValue, JsValue> {
     Reflect::set(&result, &"tables".into(), &tables)?;
 
     // Counts
-    Reflect::set(&result, &"numPoints".into(), &(data.len() as u32).into())?;
-    Reflect::set(&result, &"numVars".into(), &(data.num_vars() as u32).into())?;
+    Reflect::set(
+        &result,
+        &"numPoints".into(),
+        &JsValue::from_f64(data.len() as f64),
+    )?;
+    Reflect::set(
+        &result,
+        &"numVars".into(),
+        &JsValue::from_f64(data.num_vars() as f64),
+    )?;
     Reflect::set(
         &result,
         &"numSweeps".into(),
-        &(data.num_sweeps() as u32).into(),
+        &JsValue::from_f64(data.num_sweeps() as f64),
     )?;
 
     Ok(result.into())
 }
 
-fn vector_to_js(vector: &VectorData) -> Result<JsValue, JsValue> {
+fn vector_to_js(vector: &VectorData) -> JsValue {
     match vector {
-        VectorData::Real(vec) => {
-            let array = Float64Array::new_with_length(vec.len() as u32);
-            for (i, &v) in vec.iter().enumerate() {
-                array.set_index(i as u32, v);
-            }
-            Ok(array.into())
-        }
-        VectorData::Complex(vec) => {
-            // Return magnitude for complex data
-            let array = Float64Array::new_with_length(vec.len() as u32);
-            for (i, c) in vec.iter().enumerate() {
-                array.set_index(i as u32, (c.re * c.re + c.im * c.im).sqrt());
-            }
-            Ok(array.into())
+        VectorData::Real(values) => Float64Array::from(values.as_slice()).into(),
+        VectorData::Complex(values) => {
+            let magnitudes: Vec<f64> = values.iter().map(|value| value.norm()).collect();
+            Float64Array::from(magnitudes.as_slice()).into()
         }
     }
 }

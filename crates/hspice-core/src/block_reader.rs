@@ -1,31 +1,17 @@
-//! HSPICE Data Block Reader
-//!
-//! Unifies block reading logic from parser.rs and stream.rs.
-//! Follows the "Single Source of Truth" principle for all data block reads.
+//! Zero-copy HSPICE record-block reader.
 
 use crate::reader::MmapReader;
-use crate::types::{PostVersion, Result, END_MARKER_2001, END_MARKER_9601};
+use crate::types::{Endian, PostVersion, Result, WaveformError, END_MARKER_2001, END_MARKER_9601};
 
-// ============================================================================
-// Core Structures
-// ============================================================================
-
-/// Result of reading a single data block
-#[derive(Debug)]
-pub struct BlockData {
-    /// Data values in this block
-    pub values: Vec<f64>,
-    /// Whether this is the last block (end marker detected)
+/// Encoded values borrowed directly from a data block.
+pub(crate) struct RawBlock<'a> {
+    pub bytes: &'a [u8],
+    pub endian: Endian,
     pub is_end: bool,
 }
 
-/// Data block reader
-///
-/// Provides unified interface for reading HSPICE binary file data blocks.
-/// Supports two formats:
-/// - V9601: 4-byte float32
-/// - V2001: 8-byte float64
-pub struct BlockReader<'a> {
+/// Reads record framing while leaving numeric decoding to the caller.
+pub(crate) struct BlockReader<'a> {
     reader: MmapReader<'a>,
     version: PostVersion,
     /// Number of blocks read so far
@@ -34,7 +20,7 @@ pub struct BlockReader<'a> {
 
 impl<'a> BlockReader<'a> {
     /// Create a new block reader from the given data slice
-    pub fn new(data: &'a [u8], version: PostVersion) -> Self {
+    pub(crate) fn new(data: &'a [u8], version: PostVersion) -> Self {
         Self {
             reader: MmapReader::new(data),
             version,
@@ -44,128 +30,82 @@ impl<'a> BlockReader<'a> {
 
     /// Get item size in bytes
     #[inline]
-    fn item_size(&self) -> usize {
+    const fn item_size(&self) -> usize {
         match self.version {
             PostVersion::V9601 => 4,
             PostVersion::V2001 => 8,
         }
     }
 
-    /// Read the next data block
-    ///
-    /// Returns `None` if end of file or read failure.
-    /// Returns `Some(BlockData)` containing data and end-of-data flag.
-    pub fn next_block(&mut self) -> Result<Option<BlockData>> {
+    /// Read an encoded block without allocating or converting its values.
+    pub(crate) fn next_raw_block(&mut self) -> Result<Option<RawBlock<'a>>> {
         if self.reader.remaining() == 0 {
             return Ok(None);
         }
 
         let item_size = self.item_size();
+        let (num_items, trailer) = self.reader.read_block_header(item_size)?;
+        let bytes = self.reader.read_bytes(num_items * item_size)?;
+        let endian = self
+            .reader
+            .endian
+            .ok_or_else(|| WaveformError::FormatError("missing endianness".into()))?;
 
-        // Read block header
-        let (num_items, trailer) = match self.reader.read_block_header(item_size) {
-            Ok(r) => r,
-            Err(_) => return Ok(None),
+        let is_end = match (self.version, bytes.len()) {
+            (PostVersion::V9601, len) if len >= 4 => {
+                let start = len - 4;
+                endian.read_f32([
+                    bytes[start],
+                    bytes[start + 1],
+                    bytes[start + 2],
+                    bytes[start + 3],
+                ]) >= END_MARKER_9601
+            }
+            (PostVersion::V2001, len) if len >= 8 => {
+                let start = len - 8;
+                endian.read_f64([
+                    bytes[start],
+                    bytes[start + 1],
+                    bytes[start + 2],
+                    bytes[start + 3],
+                    bytes[start + 4],
+                    bytes[start + 5],
+                    bytes[start + 6],
+                    bytes[start + 7],
+                ]) >= END_MARKER_2001
+            }
+            _ => false,
         };
 
-        // Read data and detect end marker
-        let mut values = Vec::with_capacity(num_items);
-        let is_end = match self.version {
-            PostVersion::V9601 => {
-                self.reader
-                    .read_floats_as_f64_into(num_items, &mut values)?;
-                values
-                    .last()
-                    .map(|&v| v as f32 >= END_MARKER_9601)
-                    .unwrap_or(false)
-            }
-            PostVersion::V2001 => {
-                self.reader.read_doubles_into(num_items, &mut values)?;
-                values
-                    .last()
-                    .map(|&v| v >= END_MARKER_2001)
-                    .unwrap_or(false)
-            }
-        };
-
-        // Read block trailer
-        if self.reader.read_block_trailer(trailer).is_err() {
-            return Ok(None);
-        }
+        self.reader.read_block_trailer(trailer)?;
 
         self.block_count += 1;
-
-        Ok(Some(BlockData { values, is_end }))
-    }
-
-    /// Read all data blocks into a single Vec
-    ///
-    /// Used for one-shot reading scenarios (e.g., parser.rs).
-    pub fn read_all(&mut self) -> Result<Vec<f64>> {
-        let estimated = self.reader.remaining() / self.estimate_divisor();
-        let mut all_data = Vec::with_capacity(estimated);
-
-        while let Some(block) = self.next_block()? {
-            all_data.extend(block.values);
-            if block.is_end {
-                break;
-            }
-        }
-
-        Ok(all_data)
+        Ok(Some(RawBlock {
+            bytes,
+            endian,
+            is_end,
+        }))
     }
 
     /// Get the number of blocks read
     #[inline]
-    pub fn block_count(&self) -> usize {
+    pub(crate) fn block_count(&self) -> usize {
         self.block_count
     }
 
     /// Get format name (for debug output)
     #[inline]
-    pub fn format_name(&self) -> &'static str {
+    pub(crate) fn format_name(&self) -> &'static str {
         match self.version {
             PostVersion::V9601 => "f32",
             PostVersion::V2001 => "f64",
         }
     }
 
-    /// Get divisor for capacity estimation
-    ///
-    /// These values are empirical estimates accounting for:
-    /// - Block header overhead (16 bytes) + trailer (4 bytes) = 20 bytes per block
-    /// - Average block size varies by format
-    ///
-    /// V9601: ~5 bytes per value (4 byte f32 + ~1 byte overhead amortized)
-    /// V2001: ~9 bytes per value (8 byte f64 + ~1 byte overhead amortized)
-    #[inline]
-    fn estimate_divisor(&self) -> usize {
-        match self.version {
-            PostVersion::V9601 => 5, // 4 bytes (f32) + overhead
-            PostVersion::V2001 => 9, // 8 bytes (f64) + overhead
-        }
-    }
-
     /// Get the number of bytes consumed
     #[inline]
-    pub fn bytes_consumed(&self) -> usize {
+    pub(crate) fn bytes_consumed(&self) -> usize {
         self.reader.position()
-    }
-}
-
-// ============================================================================
-// Iterator Implementation
-// ============================================================================
-
-impl<'a> Iterator for BlockReader<'a> {
-    type Item = Result<BlockData>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.next_block() {
-            Ok(Some(block)) => Some(Ok(block)),
-            Ok(None) => None,
-            Err(e) => Some(Err(e)),
-        }
     }
 }
 

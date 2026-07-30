@@ -70,9 +70,18 @@ enum Cmd {
         /// Minimum data points per chunk.
         #[arg(long, default_value_t = 10_000)]
         chunk_size: usize,
-        /// Signal filter (repeat for multiple): --signal TIME --signal v(out)
+        /// Signal filter (repeat for multiple): --signal TIME --signal "v(out"
         #[arg(long)]
         signal: Vec<String>,
+    },
+
+    /// Decode and checksum a complete HSPICE file with bounded memory.
+    Scan {
+        /// Path to the HSPICE file.
+        file: String,
+        /// Minimum data points per chunk.
+        #[arg(long, default_value_t = 100_000)]
+        chunk_size: usize,
     },
 
     /// Export a waveform file as CSV.
@@ -113,22 +122,17 @@ fn main() -> ExitCode {
 
     let result = match &cli.cmd {
         Cmd::Info { file } => commands::cmd_info(file),
-        Cmd::Read {
-            file,
-            json,
-            signal,
-        } => commands::cmd_read(file, *json, signal.as_deref()),
-        Cmd::ReadRaw {
-            file,
-            json,
-            signal,
-        } => commands::cmd_read_raw(file, *json, signal.as_deref()),
+        Cmd::Read { file, json, signal } => commands::cmd_read(file, *json, signal.as_deref()),
+        Cmd::ReadRaw { file, json, signal } => {
+            commands::cmd_read_raw(file, *json, signal.as_deref())
+        }
         Cmd::Convert { input, output } => commands::cmd_convert(input, output),
         Cmd::Stream {
             file,
             chunk_size,
             signal,
         } => commands::cmd_stream(file, *chunk_size, signal),
+        Cmd::Scan { file, chunk_size } => commands::cmd_scan(file, *chunk_size),
         Cmd::Export {
             file,
             output,

@@ -67,7 +67,7 @@ Examples:
 hspice-cli info simulation.tr0
 hspice-cli read simulation.tr0 --json | jq .num_points
 hspice-cli convert simulation.tr0 simulation.raw
-hspice-cli export simulation.tr0 --signal TIME --signal "v(out)" -o out.csv
+hspice-cli export simulation.tr0 --signal TIME --signal "v(out" -o out.csv
 hspice-cli stream huge.tr0 --chunk-size 50000 | process_each_chunk.py
 ```
 

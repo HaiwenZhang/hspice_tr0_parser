@@ -32,8 +32,7 @@ pub const COMPLEX_VAR: i32 = 1;
 pub const REAL_VAR: i32 = 0;
 
 /// End-of-data marker for 9601 format (float32 representation of ~1e30)
-#[allow(clippy::excessive_precision)]
-pub const END_MARKER_9601: f32 = 1.0000000150474662e+30_f32;
+pub const END_MARKER_9601: f32 = 1.0e30_f32;
 /// End-of-data marker for 2001 format
 pub const END_MARKER_2001: f64 = 1.0e+30_f64;
 
@@ -42,7 +41,7 @@ pub const END_MARKER_2001: f64 = 1.0e+30_f64;
 // ============================================================================
 
 /// Endianness detected from file
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endian {
     Little,
     Big,
@@ -68,7 +67,7 @@ impl Endian {
 }
 
 /// Post format version - determines data precision
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostVersion {
     /// 9007/9601 format: 4-byte float32
     V9601,
@@ -77,7 +76,7 @@ pub enum PostVersion {
 }
 
 /// Analysis/simulation type
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnalysisType {
     /// Transient analysis (.tr0)
     Transient,
@@ -96,21 +95,32 @@ pub enum AnalysisType {
 
 impl AnalysisType {
     /// Infer analysis type from file extension
+    #[must_use]
     pub fn from_extension(ext: &str) -> Self {
-        match ext.to_lowercase().as_str() {
-            "tr0" => AnalysisType::Transient,
-            "ac0" => AnalysisType::AC,
-            "sw0" => AnalysisType::DC,
-            _ => AnalysisType::Unknown,
+        if ext.eq_ignore_ascii_case("tr0") {
+            Self::Transient
+        } else if ext.eq_ignore_ascii_case("ac0") {
+            Self::AC
+        } else if ext.eq_ignore_ascii_case("sw0") {
+            Self::DC
+        } else {
+            Self::Unknown
         }
     }
 
     /// Infer analysis type from scale name
+    #[must_use]
     pub fn from_scale_name(name: &str) -> Self {
-        match name.to_uppercase().as_str() {
-            "TIME" => AnalysisType::Transient,
-            "HERTZ" | "FREQ" | "FREQUENCY" => AnalysisType::AC,
-            _ => AnalysisType::DC, // DC sweep uses parameter name as scale
+        if name.eq_ignore_ascii_case("time") {
+            Self::Transient
+        } else if ["hertz", "freq", "frequency"]
+            .iter()
+            .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        {
+            Self::AC
+        } else {
+            // A DC sweep uses its parameter name as the scale.
+            Self::DC
         }
     }
 }
@@ -129,27 +139,33 @@ impl std::fmt::Display for AnalysisType {
             AnalysisType::Noise => "noise",
             AnalysisType::Unknown => "unknown",
         };
-        write!(f, "{}", s)
+        f.write_str(s)
     }
 }
 
 impl std::str::FromStr for AnalysisType {
-    type Err = ();
+    type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(match s.to_lowercase().as_str() {
-            "transient" | "tran" => AnalysisType::Transient,
-            "ac" => AnalysisType::AC,
-            "dc" => AnalysisType::DC,
-            "operating" | "op" => AnalysisType::Operating,
-            "noise" => AnalysisType::Noise,
-            _ => AnalysisType::Unknown,
-        })
+        let analysis = if s.eq_ignore_ascii_case("transient") || s.eq_ignore_ascii_case("tran") {
+            Self::Transient
+        } else if s.eq_ignore_ascii_case("ac") {
+            Self::AC
+        } else if s.eq_ignore_ascii_case("dc") {
+            Self::DC
+        } else if s.eq_ignore_ascii_case("operating") || s.eq_ignore_ascii_case("op") {
+            Self::Operating
+        } else if s.eq_ignore_ascii_case("noise") {
+            Self::Noise
+        } else {
+            Self::Unknown
+        };
+        Ok(analysis)
     }
 }
 
 /// Variable type (voltage, current, time, etc.)
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VarType {
     /// Time variable (scale for transient)
     Time,
@@ -166,18 +182,26 @@ pub enum VarType {
 
 impl VarType {
     /// Infer variable type from signal name
+    #[must_use]
     pub fn from_name(name: &str) -> Self {
-        let lower = name.to_lowercase();
-        if lower == "time" {
-            VarType::Time
-        } else if lower == "hertz" || lower == "freq" || lower == "frequency" {
-            VarType::Frequency
-        } else if lower.starts_with("v(") || lower.starts_with("v_") {
-            VarType::Voltage
-        } else if lower.starts_with("i(") || lower.starts_with("i_") {
-            VarType::Current
+        let prefix = name.get(..2);
+        if name.eq_ignore_ascii_case("time") {
+            Self::Time
+        } else if ["hertz", "freq", "frequency"]
+            .iter()
+            .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        {
+            Self::Frequency
+        } else if prefix.is_some_and(|value| {
+            value.eq_ignore_ascii_case("v(") || value.eq_ignore_ascii_case("v_")
+        }) {
+            Self::Voltage
+        } else if prefix.is_some_and(|value| {
+            value.eq_ignore_ascii_case("i(") || value.eq_ignore_ascii_case("i_")
+        }) {
+            Self::Current
         } else {
-            VarType::Unknown
+            Self::Unknown
         }
     }
 }
@@ -195,12 +219,12 @@ impl std::fmt::Display for VarType {
             VarType::Current => "current",
             VarType::Unknown => "unknown",
         };
-        write!(f, "{}", s)
+        f.write_str(s)
     }
 }
 
 impl std::str::FromStr for VarType {
-    type Err = ();
+    type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Ok(Self::from_name(s))
@@ -216,6 +240,7 @@ pub enum VectorData {
 
 impl VectorData {
     /// Get the number of data points
+    #[must_use]
     pub fn len(&self) -> usize {
         match self {
             VectorData::Real(v) => v.len(),
@@ -224,29 +249,45 @@ impl VectorData {
     }
 
     /// Check if empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Check if this is complex data
+    #[must_use]
     pub fn is_complex(&self) -> bool {
         matches!(self, VectorData::Complex(_))
     }
 
     /// Get real data, returns None if complex
+    #[must_use]
     pub fn as_real(&self) -> Option<&Vec<f64>> {
         match self {
-            VectorData::Real(v) => Some(v),
+            VectorData::Real(values) => Some(values),
             VectorData::Complex(_) => None,
         }
     }
 
+    /// Borrows real data as a slice, or returns `None` for complex data.
+    #[must_use]
+    pub fn as_real_slice(&self) -> Option<&[f64]> {
+        self.as_real().map(Vec::as_slice)
+    }
+
     /// Get complex data, returns None if real
+    #[must_use]
     pub fn as_complex(&self) -> Option<&Vec<Complex64>> {
         match self {
             VectorData::Real(_) => None,
-            VectorData::Complex(v) => Some(v),
+            VectorData::Complex(values) => Some(values),
         }
+    }
+
+    /// Borrows complex data as a slice, or returns `None` for real data.
+    #[must_use]
+    pub fn as_complex_slice(&self) -> Option<&[Complex64]> {
+        self.as_complex().map(Vec::as_slice)
     }
 }
 
@@ -270,9 +311,10 @@ pub enum WaveformError {
     FormatError(String),
 }
 
+/// Result type used by waveform operations.
 pub type Result<T> = std::result::Result<T, WaveformError>;
 
-// Keep old error name as alias for compatibility during transition
+/// Compatibility alias for [`WaveformError`].
 pub type HspiceError = WaveformError;
 
 // ============================================================================
@@ -282,7 +324,7 @@ pub type HspiceError = WaveformError;
 /// Metadata for a single variable/signal
 #[derive(Debug, Clone)]
 pub struct Variable {
-    /// Signal name (e.g., "TIME", "v(out)", "i(vdd)")
+    /// Signal name as stored (e.g., HSPICE `v(out` or SPICE3 `v(out)`).
     pub name: String,
     /// Variable type inferred from name
     pub var_type: VarType,
@@ -316,11 +358,13 @@ pub struct DataTable {
 
 impl DataTable {
     /// Get number of data points
+    #[must_use]
     pub fn len(&self) -> usize {
-        self.vectors.first().map(|v| v.len()).unwrap_or(0)
+        self.vectors.first().map_or(0, VectorData::len)
     }
 
     /// Check if empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.vectors.is_empty() || self.len() == 0
     }
@@ -381,59 +425,66 @@ pub struct WaveformResult {
 
 impl WaveformResult {
     /// Get the scale variable name (first variable)
+    #[must_use]
     pub fn scale_name(&self) -> &str {
-        self.variables
-            .first()
-            .map(|v| v.name.as_str())
-            .unwrap_or("")
+        self.variables.first().map_or("", |variable| &variable.name)
     }
 
     /// Get variable index by name
+    #[must_use]
     pub fn var_index(&self, name: &str) -> Option<usize> {
         self.variables.iter().position(|v| v.name == name)
     }
 
     /// Get signal data by name (from first table)
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&VectorData> {
         self.var_index(name)
-            .and_then(|i| self.tables.first().map(|t| &t.vectors[i]))
+            .and_then(|index| self.tables.first()?.vectors.get(index))
     }
 
     /// Get scale data (first variable of first table)
+    #[must_use]
     pub fn scale(&self) -> Option<&VectorData> {
         self.tables.first().and_then(|t| t.vectors.first())
     }
 
     /// Get number of data points
+    #[must_use]
     pub fn len(&self) -> usize {
-        self.tables.first().map(|t| t.len()).unwrap_or(0)
+        self.tables.first().map_or(0, DataTable::len)
     }
 
     /// Check if result is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.tables.is_empty() || self.len() == 0
     }
 
     /// Get number of variables
+    #[must_use]
     pub fn num_vars(&self) -> usize {
         self.variables.len()
     }
 
     /// Get number of sweep points (tables)
+    #[must_use]
     pub fn num_sweeps(&self) -> usize {
         self.tables.len()
     }
 
     /// Get all variable names
+    #[must_use]
     pub fn var_names(&self) -> Vec<&str> {
         self.variables.iter().map(|v| v.name.as_str()).collect()
     }
 
     /// Check if result has sweep data
+    #[must_use]
     pub fn has_sweep(&self) -> bool {
         self.sweep_param.is_some() && self.tables.len() > 1
     }
 }
 
-// Keep old name as alias during transition
+/// Compatibility alias for [`WaveformResult`].
 pub type HspiceResult = WaveformResult;

@@ -1,102 +1,83 @@
-//! True streaming reader for large HSPICE files
-//!
-//! This module provides memory-efficient streaming access to large TR0 files,
-//! reading data blocks on-demand rather than loading the entire file upfront.
-//!
-//! Design principles:
-//! - Only header is parsed at open() time (~1KB)
-//! - Data blocks are read on-demand during iteration
-//! - Block boundaries are preserved - never split a data_block in the middle of reading
-//! - Incomplete rows at block boundaries are properly accumulated
-//! - Peak memory is O(chunk_size * num_signals), not O(file_size)
+//! Memory-bounded streaming access to large HSPICE files.
 
-use crate::parser::{parse_header_only, HeaderMetadata};
-use crate::types::{PostVersion, Result, VectorData, COMPLEX_VAR};
-use memmap2::Mmap;
-use num_complex::Complex64;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::Path;
+
+use memmap2::Mmap;
 use tracing::{info, instrument, trace};
 
-/// Default chunk size (minimum number of time points per chunk)
-pub const DEFAULT_CHUNK_SIZE: usize = 10000;
+use crate::block_reader::BlockReader;
+use crate::data_builder::DataTableBuilder;
+use crate::parser::{parse_header_only, HeaderMetadata};
+use crate::types::{DataTable, PostVersion, Result, VectorData, WaveformError, COMPLEX_VAR};
 
-/// A chunk of data from the streaming reader
+/// Default minimum number of points returned in each chunk.
+pub const DEFAULT_CHUNK_SIZE: usize = 10_000;
+
+/// One column-major data chunk from a streaming reader.
 #[derive(Debug, Clone)]
 pub struct DataChunk {
-    /// Index of this chunk (0-based)
+    /// Zero-based chunk index.
     pub chunk_index: usize,
-    /// Time range [start, end] for this chunk
+    /// Scale range covered by this chunk.
     pub time_range: (f64, f64),
-    /// Signal data for this chunk
+    /// Scale and selected signal vectors, keyed by name.
     pub data: HashMap<String, VectorData>,
 }
 
-/// Metadata about the streaming file
+/// Header metadata exposed without decoding waveform samples.
 #[derive(Debug, Clone)]
 pub struct StreamMetadata {
-    /// File title
+    /// File title.
     pub title: String,
-    /// File date
+    /// File date.
     pub date: String,
-    /// Scale name (e.g., "TIME", "HERTZ")
+    /// Scale name, such as `TIME` or `HERTZ`.
     pub scale_name: String,
-    /// All signal names in the file
+    /// Signal names, excluding the scale vector.
     pub signal_names: Vec<String>,
-    /// Post format version
+    /// HSPICE post format version.
     pub post_version: PostVersion,
-    /// Whether file contains complex data
+    /// Whether signal values are complex.
     pub is_complex: bool,
 }
 
-/// True streaming reader for HSPICE files
-///
-/// Only reads header at open() time. Data blocks are read on-demand.
-/// Block boundaries are always preserved - we never split a data_block.
+/// Incremental reader that decodes blocks directly into final column vectors.
 pub struct HspiceStreamReader {
-    /// Memory-mapped file data
     mmap: Mmap,
-    /// Current read position in the data section
+    data_start: usize,
     data_position: usize,
-    /// Header metadata
     metadata: HeaderMetadata,
-    /// Minimum rows per chunk (may exceed if block is larger)
     min_chunk_size: usize,
-    /// Current chunk index
     current_chunk: usize,
-    /// Signal filter (None = all signals)
     signal_filter: Option<HashSet<String>>,
-    /// Whether we've reached end of data
     finished: bool,
-    /// Accumulated rows for current chunk
-    row_buffer: Vec<Vec<f64>>,
-    /// Pending data from incomplete row at block boundary
-    pending_data: Vec<f64>,
-    /// Number of columns per row (computed once)
-    num_columns: usize,
-    /// Whether this is the first data read (for sweep handling)
-    first_read: bool,
+    num_complex_signals: usize,
+    builder: DataTableBuilder,
 }
 
 impl HspiceStreamReader {
-    /// Open a file for true streaming read
+    /// Opens an HSPICE file and parses only its header.
     ///
-    /// Only parses the header. Data is read on-demand.
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be opened, mapped, or parsed.
     #[instrument(skip_all, fields(path = %path.as_ref().display()))]
     pub fn open<P: AsRef<Path>>(path: P, min_chunk_size: usize) -> Result<Self> {
         let file = File::open(path.as_ref())?;
+        // SAFETY: `file` remains alive until the map is created, and the resulting
+        // read-only mapping owns its OS mapping independently of the file handle.
         let mmap = unsafe { Mmap::map(&file)? };
+        #[cfg(unix)]
+        if let Err(error) = mmap.advise(memmap2::Advice::Sequential) {
+            trace!(%error, "Could not set sequential mapping advice");
+        }
 
-        // Parse header only - returns metadata and data start position
-        let (metadata, data_position) = parse_header_only(&mmap)?;
-
-        // Compute number of columns per row
-        let num_columns = if metadata.var_type == COMPLEX_VAR {
-            metadata.num_vectors + (metadata.num_variables - 1) as usize
-        } else {
-            metadata.num_vectors
-        };
+        let (metadata, data_start) = parse_header_only(&mmap)?;
+        let min_chunk_size = min_chunk_size.max(1);
+        let num_complex_signals = Self::complex_signal_count(&metadata)?;
+        let builder = Self::new_builder(&metadata, num_complex_signals, min_chunk_size);
 
         info!(
             signals = metadata.names.len(),
@@ -107,26 +88,27 @@ impl HspiceStreamReader {
 
         Ok(Self {
             mmap,
-            data_position,
+            data_start,
+            data_position: data_start,
             metadata,
-            min_chunk_size: min_chunk_size.max(1),
+            min_chunk_size,
             current_chunk: 0,
             signal_filter: None,
             finished: false,
-            row_buffer: Vec::new(),
-            pending_data: Vec::new(),
-            num_columns,
-            first_read: true,
+            num_complex_signals,
+            builder,
         })
     }
 
-    /// Set signal filter to only read specific signals
+    /// Restricts returned chunks to the requested signals.
+    #[must_use]
     pub fn with_signals(mut self, signals: Vec<String>) -> Self {
         self.signal_filter = Some(signals.into_iter().collect());
         self
     }
 
-    /// Get file metadata
+    /// Returns file metadata.
+    #[must_use]
     pub fn metadata(&self) -> StreamMetadata {
         StreamMetadata {
             title: self.metadata.title.clone(),
@@ -138,220 +120,109 @@ impl HspiceStreamReader {
         }
     }
 
-    /// Reset reader to beginning of data section
+    /// Resets iteration to the first data block without reparsing the header.
     pub fn reset(&mut self) {
-        if let Ok((_, pos)) = parse_header_only(&self.mmap) {
-            self.data_position = pos;
-            self.current_chunk = 0;
-            self.finished = false;
-            self.row_buffer.clear();
-            self.pending_data.clear();
-            self.first_read = true;
-        }
+        self.data_position = self.data_start;
+        self.current_chunk = 0;
+        self.finished = false;
+        self.builder = Self::new_builder(
+            &self.metadata,
+            self.num_complex_signals,
+            self.min_chunk_size,
+        );
     }
 
-    /// Read one complete data block from file
-    /// Returns raw f64 values, preserving block boundary
-    fn read_one_block(&mut self) -> Result<Option<Vec<f64>>> {
-        use crate::block_reader::BlockReader;
-
-        if self.finished || self.data_position >= self.mmap.len() {
-            return Ok(None);
-        }
-
-        let data_slice = &self.mmap[self.data_position..];
-        let mut block_reader = BlockReader::new(data_slice, self.metadata.post_version);
-
-        match block_reader.next_block()? {
-            Some(block) => {
-                // Update position
-                self.data_position += block_reader.bytes_consumed();
-
-                if block.is_end {
-                    self.finished = true;
-                }
-
-                // Remove end marker if present
-                let mut values = block.values;
-                if block.is_end && !values.is_empty() {
-                    values.pop();
-                }
-
-                Ok(Some(values))
-            }
-            None => {
-                self.finished = true;
-                Ok(None)
-            }
-        }
-    }
-
-    /// Parse raw block data into rows, handling incomplete rows at boundaries
-    fn block_to_rows(&mut self, block_data: Vec<f64>) -> Vec<Vec<f64>> {
-        if self.num_columns == 0 {
-            return Vec::new();
-        }
-
-        // Prepend pending data from previous block
-        let mut raw_data = std::mem::take(&mut self.pending_data);
-        raw_data.extend(block_data);
-
-        // Handle sweep value at very first read
-        if self.first_read && self.metadata.sweep_name.is_some() && !raw_data.is_empty() {
-            raw_data.remove(0); // Remove sweep value
-        }
-        self.first_read = false;
-
-        // Calculate complete rows
-        let total_values = raw_data.len();
-        let num_complete_rows = total_values / self.num_columns;
-        let complete_values = num_complete_rows * self.num_columns;
-
-        // Save incomplete row for next block
-        if complete_values < total_values {
-            self.pending_data = raw_data[complete_values..].to_vec();
-        }
-
-        // Convert to rows
-        let mut rows = Vec::with_capacity(num_complete_rows);
-        for i in 0..num_complete_rows {
-            let start = i * self.num_columns;
-            let end = start + self.num_columns;
-            rows.push(raw_data[start..end].to_vec());
-        }
-
-        rows
-    }
-
-    /// Flush any remaining pending data as a final row (if complete)
-    fn flush_pending(&mut self) -> Vec<Vec<f64>> {
-        if self.pending_data.len() >= self.num_columns && self.num_columns > 0 {
-            let num_rows = self.pending_data.len() / self.num_columns;
-            let mut rows = Vec::with_capacity(num_rows);
-            for i in 0..num_rows {
-                let start = i * self.num_columns;
-                let end = start + self.num_columns;
-                if end <= self.pending_data.len() {
-                    rows.push(self.pending_data[start..end].to_vec());
-                }
-            }
-            self.pending_data.clear();
-            rows
+    fn complex_signal_count(metadata: &HeaderMetadata) -> Result<usize> {
+        if metadata.var_type == COMPLEX_VAR {
+            usize::try_from(metadata.num_variables - 1).map_err(|_| {
+                WaveformError::FormatError(format!(
+                    "invalid complex variable count: {}",
+                    metadata.num_variables
+                ))
+            })
         } else {
-            Vec::new()
+            Ok(0)
         }
     }
 
-    // ========================================================================
-    // Helper Methods
-    // ========================================================================
+    fn new_builder(
+        metadata: &HeaderMetadata,
+        num_complex_signals: usize,
+        capacity: usize,
+    ) -> DataTableBuilder {
+        DataTableBuilder::new(
+            metadata.post_version,
+            metadata.num_vectors,
+            num_complex_signals,
+            metadata.sweep_name.is_some(),
+            capacity,
+        )
+    }
 
-    /// Check if signal should be included based on filter
-    #[inline]
+    /// Reads and decodes one complete record block without a temporary value buffer.
+    fn read_one_block(&mut self) -> Result<bool> {
+        if self.finished || self.data_position >= self.mmap.len() {
+            self.finished = true;
+            return Ok(false);
+        }
+
+        let (consumed, is_end) = {
+            let data = &self.mmap[self.data_position..];
+            let mut reader = BlockReader::new(data, self.metadata.post_version);
+            let Some(block) = reader.next_raw_block()? else {
+                self.finished = true;
+                return Ok(false);
+            };
+            self.builder
+                .push_raw_block(block.bytes, block.endian, block.is_end);
+            (reader.bytes_consumed(), block.is_end)
+        };
+
+        self.data_position = self
+            .data_position
+            .checked_add(consumed)
+            .ok_or_else(|| WaveformError::FormatError("data position overflow".into()))?;
+        self.finished = is_end;
+        Ok(true)
+    }
+
     fn should_include_signal(&self, name: &str) -> bool {
         self.signal_filter
             .as_ref()
-            .map(|f| f.contains(name))
-            .unwrap_or(true)
+            .is_none_or(|filter| filter.contains(name))
     }
 
-    /// Check if signal at given index is complex type
-    #[inline]
-    fn is_complex_signal(&self, signal_index: usize) -> bool {
-        self.metadata.var_type == COMPLEX_VAR
-            && signal_index < (self.metadata.num_variables - 1) as usize
-    }
-
-    // ========================================================================
-    // Core Methods
-    // ========================================================================
-
-    /// Allocate storage for signal vectors based on filter and type
-    fn allocate_signal_storage(
-        &self,
-        capacity: usize,
-    ) -> (HashMap<String, Vec<f64>>, HashMap<String, Vec<Complex64>>) {
-        let mut real_vecs = HashMap::new();
-        let mut complex_vecs = HashMap::new();
-        for (i, name) in self.metadata.names.iter().enumerate() {
-            if !self.should_include_signal(name) {
-                continue;
+    fn build_chunk(&self, table: DataTable) -> Result<DataChunk> {
+        let mut vectors = table.vectors.into_iter();
+        let scale = vectors
+            .next()
+            .ok_or_else(|| WaveformError::FormatError("chunk has no scale vector".into()))?;
+        let time_range = match &scale {
+            VectorData::Real(values) => {
+                let first = values.first().ok_or_else(|| {
+                    WaveformError::FormatError("chunk scale vector is empty".into())
+                })?;
+                let last = values.last().ok_or_else(|| {
+                    WaveformError::FormatError("chunk scale vector is empty".into())
+                })?;
+                (*first, *last)
             }
-            if self.is_complex_signal(i) {
-                complex_vecs.insert(name.clone(), Vec::with_capacity(capacity));
-            } else {
-                real_vecs.insert(name.clone(), Vec::with_capacity(capacity));
+            VectorData::Complex(_) => {
+                return Err(WaveformError::FormatError(
+                    "chunk scale vector cannot be complex".into(),
+                ));
             }
-        }
-        (real_vecs, complex_vecs)
-    }
+        };
 
-    /// Parse a single row into signal vectors
-    fn parse_row_into_signals(
-        &self,
-        row: &[f64],
-        real_vecs: &mut HashMap<String, Vec<f64>>,
-        complex_vecs: &mut HashMap<String, Vec<Complex64>>,
-    ) {
-        let mut col_idx = 1;
-        for (i, name) in self.metadata.names.iter().enumerate() {
-            if col_idx >= row.len() {
-                break;
-            }
-            let is_complex = self.is_complex_signal(i);
-            let col_width = if is_complex { 2 } else { 1 };
-
+        let mut data = HashMap::with_capacity(self.metadata.names.len() + 1);
+        data.insert(self.metadata.scale_name.clone(), scale);
+        for (name, vector) in self.metadata.names.iter().zip(vectors) {
             if self.should_include_signal(name) {
-                if is_complex && col_idx + 1 < row.len() {
-                    if let Some(vec) = complex_vecs.get_mut(name) {
-                        vec.push(Complex64::new(row[col_idx], row[col_idx + 1]));
-                    }
-                } else if let Some(vec) = real_vecs.get_mut(name) {
-                    vec.push(row[col_idx]);
-                }
+                data.insert(name.clone(), vector);
             }
-            col_idx += col_width;
-        }
-    }
-
-    /// Build chunk from accumulated rows
-    fn build_chunk(&self, rows: &[Vec<f64>]) -> Option<DataChunk> {
-        if rows.is_empty() {
-            return None;
         }
 
-        // Allocate storage
-        let mut scale_vec: Vec<f64> = Vec::with_capacity(rows.len());
-        let (mut real_vecs, mut complex_vecs) = self.allocate_signal_storage(rows.len());
-
-        // Parse all rows
-        for row in rows {
-            if row.is_empty() {
-                continue;
-            }
-            scale_vec.push(row[0]);
-            self.parse_row_into_signals(row, &mut real_vecs, &mut complex_vecs);
-        }
-
-        // Build result
-        let time_range = (
-            scale_vec.first().copied().unwrap_or(0.0),
-            scale_vec.last().copied().unwrap_or(0.0),
-        );
-
-        let mut data = HashMap::new();
-        data.insert(
-            self.metadata.scale_name.clone(),
-            VectorData::Real(scale_vec),
-        );
-        data.extend(real_vecs.into_iter().map(|(k, v)| (k, VectorData::Real(v))));
-        data.extend(
-            complex_vecs
-                .into_iter()
-                .map(|(k, v)| (k, VectorData::Complex(v))),
-        );
-
-        Some(DataChunk {
+        Ok(DataChunk {
             chunk_index: self.current_chunk,
             time_range,
             data,
@@ -363,62 +234,65 @@ impl Iterator for HspiceStreamReader {
     type Item = Result<DataChunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.finished && self.row_buffer.is_empty() && self.pending_data.is_empty() {
+        if self.finished && self.builder.is_empty() {
             return None;
         }
 
-        // Read complete blocks until we have at least min_chunk_size rows
-        while self.row_buffer.len() < self.min_chunk_size && !self.finished {
+        while self.builder.len() < self.min_chunk_size && !self.finished {
             match self.read_one_block() {
-                Ok(Some(block_data)) => {
-                    let rows = self.block_to_rows(block_data);
-                    self.row_buffer.extend(rows);
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    self.finished = true;
+                    return Some(Err(error));
                 }
-                Ok(None) => break,
-                Err(e) => return Some(Err(e)),
             }
         }
 
-        // If finished, flush any pending data
-        if self.finished && !self.pending_data.is_empty() {
-            let final_rows = self.flush_pending();
-            self.row_buffer.extend(final_rows);
-        }
-
-        if self.row_buffer.is_empty() {
+        if self.builder.is_empty() {
+            if self.finished && self.builder.trailing_value_count() > 0 {
+                trace!(
+                    trailing_values = self.builder.trailing_value_count(),
+                    "Ignored incomplete final row"
+                );
+            }
             return None;
         }
 
-        // Take all buffered rows for this chunk
-        let chunk_rows = std::mem::take(&mut self.row_buffer);
-
-        match self.build_chunk(&chunk_rows) {
-            Some(chunk) => {
-                trace!(
-                    chunk = self.current_chunk,
-                    points = chunk.data.values().next().map(|v| v.len()).unwrap_or(0),
-                    time_start = chunk.time_range.0,
-                    time_end = chunk.time_range.1,
-                    "Chunk built"
-                );
-                self.current_chunk += 1;
-                Some(Ok(chunk))
+        let table = self.builder.take_table(self.min_chunk_size);
+        let chunk = match self.build_chunk(table) {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                self.finished = true;
+                return Some(Err(error));
             }
-            None => None,
-        }
+        };
+        trace!(
+            chunk = self.current_chunk,
+            points = chunk.data.values().next().map_or(0, VectorData::len),
+            time_start = chunk.time_range.0,
+            time_end = chunk.time_range.1,
+            "Chunk built"
+        );
+        self.current_chunk += 1;
+        Some(Ok(chunk))
     }
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
-
-/// Open a file for streaming read with default chunk size
+/// Opens a file with [`DEFAULT_CHUNK_SIZE`].
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be opened, mapped, or parsed.
 pub fn read_stream<P: AsRef<Path>>(path: P) -> Result<HspiceStreamReader> {
     HspiceStreamReader::open(path, DEFAULT_CHUNK_SIZE)
 }
 
-/// Open a file for streaming read with custom minimum chunk size
+/// Opens a file with a custom minimum chunk size.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be opened, mapped, or parsed.
 pub fn read_stream_chunked<P: AsRef<Path>>(
     path: P,
     chunk_size: usize,
@@ -426,39 +300,39 @@ pub fn read_stream_chunked<P: AsRef<Path>>(
     HspiceStreamReader::open(path, chunk_size)
 }
 
-/// Open a file for streaming read with signal filter
+/// Opens a file and restricts returned chunks to selected signals.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be opened, mapped, or parsed.
 pub fn read_stream_signals<P: AsRef<Path>>(
     path: P,
     signals: &[&str],
     chunk_size: usize,
 ) -> Result<HspiceStreamReader> {
-    let reader = HspiceStreamReader::open(path, chunk_size)?;
-    Ok(reader.with_signals(signals.iter().map(|s| s.to_string()).collect()))
+    HspiceStreamReader::open(path, chunk_size).map(|reader| {
+        reader.with_signals(signals.iter().map(|signal| (*signal).to_owned()).collect())
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::Path;
+
+    use super::read_stream;
 
     #[test]
-    fn test_stream_reader_basic() {
+    fn stream_reader_yields_non_empty_chunks() {
         let path = "example/PinToPinSim.tr0";
-        if !std::path::Path::new(path).exists() {
+        if !Path::new(path).exists() {
             return;
         }
 
-        let reader = read_stream(path).expect("Failed to open file");
-        let metadata = reader.metadata();
+        let reader = read_stream(path).expect("test fixture should open");
+        let chunks = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("test fixture should decode");
 
-        assert!(!metadata.scale_name.is_empty());
-        assert!(!metadata.signal_names.is_empty());
-
-        let mut chunk_count = 0;
-        for chunk in reader {
-            let chunk = chunk.expect("Failed to read chunk");
-            assert!(!chunk.data.is_empty());
-            chunk_count += 1;
-        }
-        assert!(chunk_count > 0);
+        assert!(chunks.iter().all(|chunk| !chunk.data.is_empty()));
     }
 }

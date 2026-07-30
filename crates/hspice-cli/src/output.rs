@@ -165,18 +165,22 @@ pub fn print_signal(r: &WaveformResult, signal: &str) -> hspice_core::Result<()>
     let table = r.tables.first().ok_or_else(|| {
         hspice_core::WaveformError::ParseError("result has no data tables".into())
     })?;
-    let vec = &table.vectors[idx];
+    let vector = table.vectors.get(idx).ok_or_else(|| {
+        hspice_core::WaveformError::ParseError(format!(
+            "signal index {idx} is missing from the first table"
+        ))
+    })?;
 
     let mut out = io::stdout().lock();
-    match vec {
-        VectorData::Real(v) => {
-            for x in v {
-                writeln!(out, "{}", x)?;
+    match vector {
+        VectorData::Real(values) => {
+            for value in values {
+                writeln!(out, "{value}")?;
             }
         }
-        VectorData::Complex(v) => {
-            for z in v {
-                writeln!(out, "{},{}", z.re, z.im)?;
+        VectorData::Complex(values) => {
+            for value in values {
+                writeln!(out, "{},{}", value.re, value.im)?;
             }
         }
     }

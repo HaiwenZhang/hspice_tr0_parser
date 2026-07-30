@@ -1,16 +1,18 @@
 //! Memory-mapped file reader for efficient large file parsing
 
-use crate::types::{Endian, HspiceError, Result};
+use std::io::{Error, ErrorKind};
+
+use crate::types::{Endian, Result, WaveformError};
 
 /// Memory-mapped file reader for efficient large file parsing
-pub struct MmapReader<'a> {
+pub(crate) struct MmapReader<'a> {
     data: &'a [u8],
     pos: usize,
-    pub endian: Option<Endian>,
+    pub(crate) endian: Option<Endian>,
 }
 
 impl<'a> MmapReader<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
+    pub(crate) const fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             pos: 0,
@@ -19,31 +21,52 @@ impl<'a> MmapReader<'a> {
     }
 
     #[inline]
-    pub fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
     }
 
     /// Get current read position
     #[inline]
-    pub fn position(&self) -> usize {
+    pub(crate) fn position(&self) -> usize {
         self.pos
     }
 
+    /// Borrow all unread bytes without changing the current position.
     #[inline]
-    pub fn read_bytes(&mut self, count: usize) -> Result<&'a [u8]> {
-        if self.pos + count > self.data.len() {
-            return Err(HspiceError::IoError(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
+    pub(crate) fn remaining_bytes(&self) -> &'a [u8] {
+        &self.data[self.pos..]
+    }
+
+    /// Advance over already-consumed bytes.
+    #[inline]
+    pub(crate) fn advance(&mut self, count: usize) -> Result<()> {
+        self.read_bytes(count).map(|_| ())
+    }
+
+    #[inline]
+    pub(crate) fn read_bytes(&mut self, count: usize) -> Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(count)
+            .ok_or_else(|| WaveformError::FormatError("read position overflow".into()))?;
+        if end > self.data.len() {
+            return Err(WaveformError::IoError(Error::new(
+                ErrorKind::UnexpectedEof,
                 "Unexpected end of file",
             )));
         }
-        let bytes = &self.data[self.pos..self.pos + count];
-        self.pos += count;
+        let bytes = &self.data[self.pos..end];
+        self.pos = end;
         Ok(bytes)
     }
 
     /// Read and detect endianness from block header
-    pub fn read_block_header(&mut self, item_size: usize) -> Result<(usize, i32)> {
+    pub(crate) fn read_block_header(&mut self, item_size: usize) -> Result<(usize, i32)> {
+        if item_size == 0 {
+            return Err(WaveformError::FormatError(
+                "block item size must be non-zero".into(),
+            ));
+        }
         let header_bytes = self.read_bytes(16)?;
 
         // Check endianness by examining first and third int
@@ -77,7 +100,7 @@ impl<'a> MmapReader<'a> {
         } else if first_be == 0x00000004 && third_be == 0x00000004 {
             Endian::Big
         } else {
-            return Err(HspiceError::FormatError("Corrupted block header".into()));
+            return Err(WaveformError::FormatError("corrupted block header".into()));
         };
 
         self.endian = Some(endian);
@@ -89,14 +112,24 @@ impl<'a> MmapReader<'a> {
             header_bytes[15],
         ]);
 
-        let num_items = (trailer_value as usize) / item_size;
+        let byte_count = usize::try_from(trailer_value).map_err(|_| {
+            WaveformError::FormatError(format!("negative block byte count: {trailer_value}"))
+        })?;
+        if byte_count % item_size != 0 {
+            return Err(WaveformError::FormatError(format!(
+                "block byte count {byte_count} is not divisible by item size {item_size}"
+            )));
+        }
+        let num_items = byte_count / item_size;
         Ok((num_items, trailer_value))
     }
 
     /// Read block trailer and verify
-    pub fn read_block_trailer(&mut self, expected: i32) -> Result<()> {
+    pub(crate) fn read_block_trailer(&mut self, expected: i32) -> Result<()> {
         let trailer_bytes = self.read_bytes(4)?;
-        let endian = self.endian.unwrap_or(Endian::Little);
+        let endian = self
+            .endian
+            .ok_or_else(|| WaveformError::FormatError("block endianness is unknown".into()))?;
         let trailer = endian.read_i32([
             trailer_bytes[0],
             trailer_bytes[1],
@@ -105,59 +138,10 @@ impl<'a> MmapReader<'a> {
         ]);
 
         if trailer != expected {
-            return Err(HspiceError::FormatError(
+            return Err(WaveformError::FormatError(
                 "Block header and trailer mismatch".into(),
             ));
         }
-        Ok(())
-    }
-
-    /// Read f32 values and convert to f64, appending directly to target Vec
-    /// This avoids creating an intermediate Vec<f32>
-    #[inline]
-    pub fn read_floats_as_f64_into(&mut self, count: usize, target: &mut Vec<f64>) -> Result<()> {
-        let byte_count = count * 4; // f32 is 4 bytes
-        let bytes = self.read_bytes(byte_count)?;
-
-        target.reserve(count);
-        let endian = self.endian.unwrap_or(Endian::Little);
-
-        // Process 2 values at a time for better pipelining
-        let chunks = bytes.chunks_exact(8);
-        let remainder = chunks.remainder();
-
-        for chunk in chunks {
-            let v1 = endian.read_f32([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            let v2 = endian.read_f32([chunk[4], chunk[5], chunk[6], chunk[7]]);
-            target.push(v1 as f64);
-            target.push(v2 as f64);
-        }
-
-        // Handle remaining bytes (0 or 4 bytes)
-        if remainder.len() >= 4 {
-            let v = endian.read_f32([remainder[0], remainder[1], remainder[2], remainder[3]]);
-            target.push(v as f64);
-        }
-
-        Ok(())
-    }
-
-    /// Read f64 values, appending directly to target Vec
-    #[inline]
-    pub fn read_doubles_into(&mut self, count: usize, target: &mut Vec<f64>) -> Result<()> {
-        let byte_count = count * 8;
-        let bytes = self.read_bytes(byte_count)?;
-
-        target.reserve(count);
-        let endian = self.endian.unwrap_or(Endian::Little);
-
-        for chunk in bytes.chunks_exact(8) {
-            let v = endian.read_f64([
-                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-            ]);
-            target.push(v);
-        }
-
         Ok(())
     }
 }

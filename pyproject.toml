@@ -24,5 +24,4 @@ dev = ["maturin", "pytest"]
 
 [tool.maturin]
 manifest-path = "crates/hspice-python/Cargo.toml"
-python-source = "."
 module-name = "hspicetr0parser"

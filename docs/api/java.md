@@ -111,7 +111,7 @@ public class Example {
 
             // Get data
             double[] time = result.getRealData("TIME");
-            double[] vout = result.getRealData("v(out)");
+            double[] vout = result.getRealData("v(out");
 
             System.out.printf("Time: %.3e to %.3e%n",
                 time[0], time[time.length - 1]);

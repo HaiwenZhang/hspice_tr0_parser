@@ -6,7 +6,11 @@
 //! - test_stream: Streaming API
 //! - test_convert: SPICE3 raw conversion
 
-use hspice_core::{read, read_and_convert, read_debug, AnalysisType, VectorData};
+#[expect(
+    deprecated,
+    reason = "this compatibility test intentionally exercises the deprecated entry point"
+)]
+use hspice_core::{read, read_and_convert, read_bytes, read_debug, AnalysisType, VectorData};
 use hspice_core::{read_stream, read_stream_chunked};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -53,6 +57,23 @@ fn test_read_returns_result() {
 
     let result = read(path.to_str().unwrap());
     assert!(result.is_ok(), "read() should succeed for valid file");
+}
+
+#[test]
+fn test_read_bytes_matches_file_reader_shape() {
+    let path = example_tr0();
+    if skip_if_missing(&path) {
+        return;
+    }
+
+    let bytes = std::fs::read(&path).unwrap();
+    let from_bytes = read_bytes(&bytes, "fixture.tr0").unwrap();
+    let from_file = read(path.to_str().unwrap()).unwrap();
+
+    assert_eq!(
+        (from_bytes.len(), from_bytes.var_names()),
+        (from_file.len(), from_file.var_names())
+    );
 }
 
 #[test]
@@ -129,6 +150,10 @@ fn test_data_consistency() {
 }
 
 #[test]
+#[expect(
+    deprecated,
+    reason = "this compatibility test intentionally exercises the deprecated entry point"
+)]
 fn test_debug_modes() {
     let path = example_tr0();
     if skip_if_missing(&path) {

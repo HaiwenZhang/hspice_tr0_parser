@@ -60,7 +60,7 @@ Get all signal names from a file.
 import { getSignalNames } from "hspice-wasm";
 
 const names = getSignalNames(fileData);
-// ["TIME", "v(out)", "i(vin)", ...]
+// ["TIME", "v(out", "i(vin", ...]
 ```
 
 ### `getSignalData(data: Uint8Array, signalName: string): Float64Array`
@@ -71,7 +71,7 @@ Get specific signal data.
 import { getSignalData } from "hspice-wasm";
 
 const time = getSignalData(fileData, "TIME");
-const vout = getSignalData(fileData, "v(out)");
+const vout = getSignalData(fileData, "v(out");
 ```
 
 ### `parseRaw(data: Uint8Array): WaveformResult`
@@ -149,7 +149,7 @@ async function loadWaveform(file: File) {
 
   // Access data
   const time = result.tables[0].signals["TIME"];
-  const vout = result.tables[0].signals["v(out)"];
+  const vout = result.tables[0].signals["v(out"];
 
   return { time, vout };
 }
@@ -213,7 +213,7 @@ async function plotWaveform(file: File, canvas: HTMLCanvasElement) {
   const result = parseHspice(data);
 
   const time = Array.from(result.tables[0].signals["TIME"]);
-  const vout = Array.from(result.tables[0].signals["v(out)"]);
+  const vout = Array.from(result.tables[0].signals["v(out"]);
 
   new Chart(canvas, {
     type: "line",

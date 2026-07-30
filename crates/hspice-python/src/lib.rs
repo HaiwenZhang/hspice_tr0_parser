@@ -1,13 +1,15 @@
-//! Python bindings for waveform file parser
-//!
-//! This crate provides PyO3 bindings to expose hspice-core to Python.
+//! Python bindings for the waveform parser.
 
-use hspice_core::{self, DataTable, Variable, VectorData, WaveformResult};
+use std::sync::{Arc, Once};
+
+use hspice_core::{
+    self, DataChunk, DataTable, HspiceStreamReader, Variable, VectorData, WaveformResult,
+};
 use numpy::ndarray::Array1;
 use numpy::IntoPyArray;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
-use std::sync::Once;
+use pyo3::types::PyDict;
 
 // ============================================================================
 // Logging Initialization
@@ -75,8 +77,8 @@ impl From<&Variable> for PyVariable {
 pub struct PyDataTable {
     #[pyo3(get)]
     pub sweep_value: Option<f64>,
-    vectors: Vec<VectorData>,
-    var_names: Vec<String>,
+    table: Arc<DataTable>,
+    var_names: Arc<[String]>,
 }
 
 #[pymethods]
@@ -84,18 +86,18 @@ impl PyDataTable {
     /// Get signal data by name
     fn get<'py>(&self, py: Python<'py>, name: &str) -> Option<Py<PyAny>> {
         let idx = self.var_names.iter().position(|n| n == name)?;
-        let vector = self.vectors.get(idx)?;
+        let vector = self.table.vectors.get(idx)?;
         Some(vector_to_numpy(py, vector))
     }
 
     /// Get number of data points
     fn __len__(&self) -> usize {
-        self.vectors.first().map(|v| v.len()).unwrap_or(0)
+        self.table.len()
     }
 
     /// Get all signal names
     fn keys(&self) -> Vec<String> {
-        self.var_names.clone()
+        self.var_names.to_vec()
     }
 
     fn __repr__(&self) -> String {
@@ -121,8 +123,8 @@ pub struct PyWaveformResult {
     #[pyo3(get)]
     pub sweep_param: Option<String>,
 
-    variables: Vec<Variable>,
-    tables: Vec<DataTable>,
+    variables: Arc<[Variable]>,
+    tables: Vec<Arc<DataTable>>,
 }
 
 #[pymethods]
@@ -136,12 +138,17 @@ impl PyWaveformResult {
     /// Get list of data tables
     #[getter]
     fn tables(&self) -> Vec<PyDataTable> {
+        let var_names: Arc<[String]> = self
+            .variables
+            .iter()
+            .map(|variable| variable.name.clone())
+            .collect();
         self.tables
             .iter()
-            .map(|t| PyDataTable {
-                sweep_value: t.sweep_value,
-                vectors: t.vectors.clone(),
-                var_names: self.variables.iter().map(|v| v.name.clone()).collect(),
+            .map(|table| PyDataTable {
+                sweep_value: table.sweep_value,
+                table: Arc::clone(table),
+                var_names: Arc::clone(&var_names),
             })
             .collect()
     }
@@ -155,7 +162,7 @@ impl PyWaveformResult {
 
     /// Get number of data points
     fn __len__(&self) -> usize {
-        self.tables.first().map(|t| t.len()).unwrap_or(0)
+        self.tables.first().map_or(0, |table| table.len())
     }
 
     /// Get number of variables
@@ -191,7 +198,6 @@ impl PyWaveformResult {
 
 impl From<WaveformResult> for PyWaveformResult {
     fn from(r: WaveformResult) -> Self {
-        // Compute values that depend on &self before move
         let analysis = r.analysis.to_string();
         let scale_name = r.scale_name().to_string();
         PyWaveformResult {
@@ -200,9 +206,31 @@ impl From<WaveformResult> for PyWaveformResult {
             analysis,
             scale_name,
             sweep_param: r.sweep_param,
-            variables: r.variables,
-            tables: r.tables,
+            variables: r.variables.into(),
+            tables: r.tables.into_iter().map(Arc::new).collect(),
         }
+    }
+}
+
+/// Lazy Python iterator over decoded waveform chunks.
+#[pyclass(name = "WaveformStream")]
+pub struct PyWaveformStream {
+    reader: HspiceStreamReader,
+}
+
+#[pymethods]
+impl PyWaveformStream {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        self.reader
+            .next()
+            .transpose()
+            .map_err(core_error_to_python)?
+            .map(|chunk| chunk_to_python(py, chunk))
+            .transpose()
     }
 }
 
@@ -221,6 +249,23 @@ fn vector_to_numpy(py: Python, vector: &VectorData) -> Py<PyAny> {
             .into_any()
             .unbind(),
     }
+}
+
+fn chunk_to_python(py: Python<'_>, chunk: DataChunk) -> PyResult<Py<PyDict>> {
+    let chunk_dict = PyDict::new(py);
+    chunk_dict.set_item("chunk_index", chunk.chunk_index)?;
+    chunk_dict.set_item("time_range", chunk.time_range)?;
+
+    let data_dict = PyDict::new(py);
+    for (name, vector) in chunk.data {
+        data_dict.set_item(name, vector_to_numpy(py, &vector))?;
+    }
+    chunk_dict.set_item("data", data_dict)?;
+    Ok(chunk_dict.unbind())
+}
+
+fn core_error_to_python(error: hspice_core::WaveformError) -> PyErr {
+    PyRuntimeError::new_err(error.to_string())
 }
 
 // ============================================================================
@@ -263,59 +308,20 @@ pub fn convert_to_raw(_py: Python, input_path: &str, output_path: &str) -> PyRes
 #[pyfunction]
 #[pyo3(signature = (filename, chunk_size=10000, signals=None))]
 pub fn stream(
-    py: Python,
     filename: &str,
     chunk_size: usize,
     signals: Option<Vec<String>>,
-) -> PyResult<Py<PyList>> {
-    use hspice_core::{read_stream_chunked, read_stream_signals};
+) -> PyResult<PyWaveformStream> {
+    tracing::debug!("Opening stream: {filename} (chunk_size={chunk_size})");
 
-    tracing::debug!("Opening stream: {} (chunk_size={})", filename, chunk_size);
-
-    let reader = if let Some(ref sigs) = signals {
-        let sig_refs: Vec<&str> = sigs.iter().map(|s| s.as_str()).collect();
-        match read_stream_signals(filename, &sig_refs, chunk_size) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("Stream open error: {:?}", e);
-                return Ok(PyList::empty(py).unbind());
-            }
-        }
-    } else {
-        match read_stream_chunked(filename, chunk_size) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("Stream open error: {:?}", e);
-                return Ok(PyList::empty(py).unbind());
-            }
-        }
+    let reader =
+        hspice_core::read_stream_chunked(filename, chunk_size).map_err(core_error_to_python)?;
+    let reader = match signals {
+        Some(selected) => reader.with_signals(selected),
+        None => reader,
     };
 
-    let chunks_list = PyList::empty(py);
-
-    for chunk_result in reader {
-        match chunk_result {
-            Ok(chunk) => {
-                let chunk_dict = PyDict::new(py);
-                chunk_dict.set_item("chunk_index", chunk.chunk_index)?;
-                chunk_dict.set_item("time_range", (chunk.time_range.0, chunk.time_range.1))?;
-
-                let data_dict = PyDict::new(py);
-                for (name, vector) in chunk.data {
-                    data_dict.set_item(name, vector_to_numpy(py, &vector))?;
-                }
-                chunk_dict.set_item("data", data_dict)?;
-
-                chunks_list.append(chunk_dict)?;
-            }
-            Err(e) => {
-                tracing::error!("Stream chunk error: {:?}", e);
-                break;
-            }
-        }
-    }
-
-    Ok(chunks_list.unbind())
+    Ok(PyWaveformStream { reader })
 }
 
 /// Read a SPICE3/ngspice raw file (auto-detects binary/ASCII format)
@@ -354,6 +360,7 @@ pub fn hspicetr0parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWaveformResult>()?;
     m.add_class::<PyVariable>()?;
     m.add_class::<PyDataTable>()?;
+    m.add_class::<PyWaveformStream>()?;
 
     Ok(())
 }

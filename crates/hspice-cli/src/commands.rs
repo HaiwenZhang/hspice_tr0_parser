@@ -2,10 +2,11 @@
 
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
+use std::path::Path;
 
 use hspice_core::{
-    parse_header_only, read, read_and_convert, read_raw, read_stream_chunked,
-    read_stream_signals, Result, VectorData, WaveformError, WaveformResult, COMPLEX_VAR,
+    parse_header_only, read, read_and_convert, read_raw, read_stream_chunked, read_stream_signals,
+    Result, VectorData, WaveformError, WaveformResult, COMPLEX_VAR,
 };
 use memmap2::Mmap;
 
@@ -16,17 +17,19 @@ use crate::output::{print_result, print_signal, ChunkView, ResultView};
 // ---------------------------------------------------------------------------
 
 pub fn cmd_info(file: &str) -> Result<()> {
-    let f = File::open(file)?;
-    let mmap = unsafe { Mmap::map(&f)? };
+    let input = File::open(file)?;
+    // SAFETY: the CLI creates a read-only mapping and does not mutate the
+    // underlying file during header parsing.
+    let mmap = unsafe { Mmap::map(&input)? };
     let (meta, _data_offset) = parse_header_only(&mmap)?;
 
     let mut out = io::stdout().lock();
-    let _ = writeln!(out, "File:        {}", file);
-    let _ = writeln!(out, "Title:       {}", meta.title);
-    let _ = writeln!(out, "Date:        {}", meta.date);
-    let _ = writeln!(out, "Post format: {:?}", meta.post_version);
-    let _ = writeln!(out, "Scale:       {}", meta.scale_name);
-    let _ = writeln!(
+    writeln!(out, "File:        {file}")?;
+    writeln!(out, "Title:       {}", meta.title)?;
+    writeln!(out, "Date:        {}", meta.date)?;
+    writeln!(out, "Post format: {:?}", meta.post_version)?;
+    writeln!(out, "Scale:       {}", meta.scale_name)?;
+    writeln!(
         out,
         "Data kind:   {}",
         if meta.var_type == COMPLEX_VAR {
@@ -34,23 +37,19 @@ pub fn cmd_info(file: &str) -> Result<()> {
         } else {
             "real"
         }
-    );
+    )?;
     match &meta.sweep_name {
-        Some(s) => {
-            let _ = writeln!(out, "Sweep:       {} ({} point(s))", s, meta.sweep_size);
-        }
-        None => {
-            let _ = writeln!(out, "Sweep:       (none)");
-        }
+        Some(sweep) => writeln!(out, "Sweep:       {sweep} ({} point(s))", meta.sweep_size)?,
+        None => writeln!(out, "Sweep:       (none)")?,
     }
-    let _ = writeln!(
+    writeln!(
         out,
         "Variables:   {} (signals: {})",
         meta.num_variables,
         meta.names.len()
-    );
+    )?;
     for (i, name) in meta.names.iter().enumerate() {
-        let _ = writeln!(out, "  [{:>3}] {}", i, name);
+        writeln!(out, "  [{i:>3}] {name}")?;
     }
     Ok(())
 }
@@ -129,6 +128,57 @@ pub fn cmd_stream(file: &str, chunk_size: usize, signals: &[String]) -> Result<(
 }
 
 // ---------------------------------------------------------------------------
+// scan
+// ---------------------------------------------------------------------------
+
+/// Decodes an entire file with bounded memory and prints a compact checksum.
+pub fn cmd_scan(file: &str, chunk_size: usize) -> Result<()> {
+    let reader = read_stream_chunked(file, chunk_size)?;
+    let metadata = reader.metadata();
+    let mut chunks = 0_usize;
+    let mut points = 0_usize;
+    let mut checksum = 0.0_f64;
+    let mut scale_start = None;
+    let mut scale_end = None;
+
+    for chunk in reader {
+        let chunk = chunk?;
+        let scale = chunk
+            .data
+            .get(&metadata.scale_name)
+            .and_then(VectorData::as_real_slice)
+            .ok_or_else(|| WaveformError::ParseError("chunk has no real scale vector".into()))?;
+        scale_start = scale_start.or_else(|| scale.first().copied());
+        scale_end = scale.last().copied().or(scale_end);
+        points += scale.len();
+        chunks += 1;
+
+        checksum += chunk
+            .data
+            .values()
+            .map(|vector| match vector {
+                VectorData::Real(values) => values.iter().sum::<f64>(),
+                VectorData::Complex(values) => values.iter().map(|value| value.re + value.im).sum(),
+            })
+            .sum::<f64>();
+    }
+
+    let mut out = io::stdout().lock();
+    writeln!(out, "File:       {file}")?;
+    writeln!(out, "Signals:    {}", metadata.signal_names.len())?;
+    writeln!(out, "Chunks:     {chunks}")?;
+    writeln!(out, "Points:     {points}")?;
+    writeln!(
+        out,
+        "Scale:      {} .. {}",
+        scale_start.unwrap_or(0.0),
+        scale_end.unwrap_or(0.0)
+    )?;
+    writeln!(out, "Checksum:   {checksum:.17e}")?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // export (CSV)
 // ---------------------------------------------------------------------------
 
@@ -151,7 +201,10 @@ pub fn cmd_export(
 ) -> Result<()> {
     let result = match format {
         ExportFormat::Auto => {
-            if file.to_lowercase().ends_with(".raw") {
+            if Path::new(file)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("raw"))
+            {
                 read_raw(file)?
             } else {
                 read(file)?
@@ -190,9 +243,9 @@ fn write_csv<W: Write>(
     } else {
         let mut out = Vec::with_capacity(filter.len());
         for name in filter {
-            let idx = r.var_index(name).ok_or_else(|| {
-                WaveformError::ParseError(format!("signal '{}' not found", name))
-            })?;
+            let idx = r
+                .var_index(name)
+                .ok_or_else(|| WaveformError::ParseError(format!("signal '{}' not found", name)))?;
             out.push(idx);
         }
         out
@@ -218,12 +271,19 @@ fn write_csv<W: Write>(
         header_parts.push(r.sweep_param.clone().unwrap_or_else(|| "sweep".into()));
     }
     for (&col, &is_cx) in columns.iter().zip(complex_flags.iter()) {
-        let name = &r.variables[col].name;
+        let name = r
+            .variables
+            .get(col)
+            .ok_or_else(|| {
+                WaveformError::ParseError(format!("variable index {col} is out of range"))
+            })?
+            .name
+            .as_str();
         if is_cx {
             header_parts.push(format!("{}.re", name));
             header_parts.push(format!("{}.im", name));
         } else {
-            header_parts.push(name.clone());
+            header_parts.push(name.to_owned());
         }
     }
     writeln!(w, "{}", header_parts.join(&d))?;
@@ -239,24 +299,45 @@ fn write_csv<W: Write>(
             }
             for (&col, &is_cx) in columns.iter().zip(complex_flags.iter()) {
                 let vec = table.vectors.get(col).ok_or_else(|| {
-                    WaveformError::ParseError(format!(
-                        "column index {} out of range in table",
-                        col
-                    ))
+                    WaveformError::ParseError(format!("column index {} out of range in table", col))
                 })?;
                 if !first {
                     write!(w, "{}", d)?;
                 }
                 first = false;
                 match (vec, is_cx) {
-                    (VectorData::Real(v), false) => write!(w, "{}", v[row])?,
+                    (VectorData::Real(v), false) => write!(
+                        w,
+                        "{}",
+                        v.get(row).ok_or_else(|| WaveformError::ParseError(format!(
+                            "row {row} is missing from real column {col}"
+                        )))?
+                    )?,
                     (VectorData::Complex(v), true) => {
-                        let z = &v[row];
+                        let z = v.get(row).ok_or_else(|| {
+                            WaveformError::ParseError(format!(
+                                "row {row} is missing from complex column {col}"
+                            ))
+                        })?;
                         write!(w, "{}{}{}", z.re, d, z.im)?;
                     }
                     // Type changed across sweep tables — shouldn't happen, but be safe.
-                    (VectorData::Real(v), true) => write!(w, "{}{}0", v[row], d)?,
-                    (VectorData::Complex(v), false) => write!(w, "{}", v[row].re)?,
+                    (VectorData::Real(v), true) => {
+                        let value = v.get(row).ok_or_else(|| {
+                            WaveformError::ParseError(format!(
+                                "row {row} is missing from real column {col}"
+                            ))
+                        })?;
+                        write!(w, "{value}{d}0")?;
+                    }
+                    (VectorData::Complex(v), false) => {
+                        let value = v.get(row).ok_or_else(|| {
+                            WaveformError::ParseError(format!(
+                                "row {row} is missing from complex column {col}"
+                            ))
+                        })?;
+                        write!(w, "{}", value.re)?;
+                    }
                 }
             }
             writeln!(w)?;

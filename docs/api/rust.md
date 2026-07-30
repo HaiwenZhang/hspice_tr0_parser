@@ -77,7 +77,7 @@ Control minimum points per chunk.
 Filter to specific signals.
 
 ```rust
-let signals = ["TIME", "v(out)"];
+let signals = ["TIME", "v(out"];
 let reader = hspice_core::read_stream_signals("file.tr0", &signals, 10000)?;
 ```
 

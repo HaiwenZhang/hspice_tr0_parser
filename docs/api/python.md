@@ -129,7 +129,7 @@ Variable/signal metadata.
 
 **Attributes:**
 
-- `name` (str): Variable name (e.g., `'TIME'`, `'v(out)'`)
+- `name` (str): Variable name as stored (e.g., `'TIME'`, `'v(out'` for HSPICE)
 - `var_type` (str): Variable type (`'time'`, `'voltage'`, `'current'`, `'frequency'`)
 
 ### `DataTable`
@@ -168,7 +168,7 @@ for var in result.variables:
 
 # Get signal data
 time = result.get('TIME')
-vout = result.get('v(out)')
+vout = result.get('v(out')
 ```
 
 ### Plotting
@@ -206,7 +206,7 @@ all_vout = []
 
 for chunk in hspicetr0parser.stream('large_sim.tr0', chunk_size=100000):
     all_time.append(chunk['data']['TIME'])
-    all_vout.append(chunk['data']['v(out)'])
+    all_vout.append(chunk['data']['v(out'])
 
 time = np.concatenate(all_time)
 vout = np.concatenate(all_vout)

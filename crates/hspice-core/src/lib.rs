@@ -61,6 +61,7 @@
 //! ```
 
 mod block_reader;
+mod data_builder;
 mod parser;
 mod raw_parser;
 mod reader;
@@ -123,12 +124,25 @@ pub use writer::write_spice3_raw;
 /// println!("Scale: {}", result.scale_name());
 ///
 /// // Access signal by name
-/// if let Some(vout) = result.get("v(out)") {
-///     println!("v(out): {} points", vout.len());
+/// if let Some(vout) = result.get("v(out") {
+///     println!("v(out: {} points", vout.len());
 /// }
 /// ```
 pub fn read(filename: &str) -> Result<WaveformResult> {
     parser::hspice_read_impl(filename)
+}
+
+/// Reads an HSPICE waveform from an in-memory byte slice.
+///
+/// `filename_hint` is used only to infer the analysis type when the scale name
+/// is not conclusive.
+///
+/// # Errors
+///
+/// Returns [`WaveformError`] when the bytes do not contain a supported HSPICE
+/// binary waveform.
+pub fn read_bytes(data: &[u8], filename_hint: &str) -> Result<WaveformResult> {
+    parser::hspice_read_bytes_impl(data, filename_hint)
 }
 
 /// Read a waveform file with debug output.
@@ -172,5 +186,10 @@ pub fn read_and_convert_debug(input_path: &str, output_path: &str, _debug: i32) 
 // Re-export header parsing for advanced use
 pub use parser::{parse_header_only, HeaderMetadata};
 
-// Re-export SPICE3 raw file reader
-pub use raw_parser::{read_raw, read_raw_debug};
+// Re-export SPICE3 raw file reader.
+#[expect(
+    deprecated,
+    reason = "the deprecated symbol remains exported for source compatibility"
+)]
+pub use raw_parser::read_raw_debug;
+pub use raw_parser::{read_raw, read_raw_bytes};
