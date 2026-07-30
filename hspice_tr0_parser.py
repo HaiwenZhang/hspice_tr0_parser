@@ -104,6 +104,7 @@ def stream(filename, chunk_size=10000, signals=None, debug=0):
     
     Yields:
         dict: Chunk with 'chunk_index', 'time_range', 'data'
+        The iterator is empty if the file cannot be opened or parsed.
     
     Example:
         >>> from hspice_tr0_parser import stream
@@ -115,7 +116,10 @@ def stream(filename, chunk_size=10000, signals=None, debug=0):
     if debug > 0:
         levels = {1: "info", 2: "debug"}
         _lib.init_logging(levels.get(debug, "info"))
-    chunks = _lib.stream(filename, chunk_size, signals)
+    try:
+        chunks = _lib.stream(filename, chunk_size, signals)
+    except RuntimeError:
+        return
     for chunk in chunks:
         yield chunk
 
