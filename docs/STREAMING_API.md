@@ -1,230 +1,163 @@
-# Streaming API Architecture
+# Streaming API
 
 ## Overview
 
-This module provides a **true streaming API** for reading large HSPICE TR0 files, loading data blocks on-demand with peak memory independent of file size.
+The streaming API reads HSPICE binary records incrementally and returns
+column-oriented chunks without constructing a complete `WaveformResult`.
+It supports 9601 (`f32`) and 2001 (`f64`) files, real and AC complex data, and
+both little- and big-endian input.
 
----
+SPICE3 raw files are not supported by this API; use `read_raw()` for those.
 
-## Design Principles
+## How It Works
 
-| Principle                     | Implementation                                                          |
-| ----------------------------- | ----------------------------------------------------------------------- |
-| **On-demand loading**         | Only parse header (~1KB) at `open()`, read data blocks during iteration |
-| **Preserve block boundaries** | Never split a data_block during reading                                 |
-| **Handle cross-block rows**   | Incomplete rows accumulate in `pending_data`, merged with next block    |
-| **O(chunk) memory**           | Peak memory = chunk_size × num_signals, independent of file size        |
-
----
-
-## Memory Model
-
-```
-1GB file comparison:
-
-┌────────────────────────────────────────────────────────────┐
-│  Traditional full read                                      │
-│  open(): Load 1GB → Memory 2-3GB                           │
-│  iterate(): Access in-memory data                          │
-└────────────────────────────────────────────────────────────┘
-
-┌────────────────────────────────────────────────────────────┐
-│  True streaming                                             │
-│  open(): Parse header (~1KB) → Memory ~0                   │
-│  next(): Read 1 block (~80KB) → Memory ~80MB               │
-│  Peak: O(chunk_size × num_signals)                         │
-└────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Open["Open and memory-map file"] --> Header["Parse header once"]
+    Header --> Records["Read framed records on demand"]
+    Records --> Decode["Decode complete rows into column vectors"]
+    Decode --> Chunk["Return DataChunk"]
+    Chunk -->|next| Records
 ```
 
----
+`HspiceStreamReader` keeps the mapped input, the current byte position, parsed
+header metadata, an incremental `DataTableBuilder`, and any partial row that
+crosses a record boundary. Record payloads are decoded directly into the final
+column vectors.
 
-## Architecture Diagram
+`chunk_size` is a minimum target, not a strict maximum. The reader consumes
+whole HSPICE records until it has at least that many points, so a returned chunk
+can be larger. Values smaller than 1 are normalized to 1.
 
+## Rust API
+
+```rust
+use hspice_core::{read_stream_signals, VectorData};
+
+fn main() -> hspice_core::Result<()> {
+    let mut reader = read_stream_signals(
+        "large.tr0",
+        &["v(out", "i(vdd"],
+        50_000,
+    )?;
+
+    let metadata = reader.metadata();
+    println!("{}: {}", metadata.title, metadata.scale_name);
+
+    for chunk in reader.by_ref() {
+        let chunk = chunk?;
+        let point_count = chunk
+            .data
+            .get(&metadata.scale_name)
+            .map_or(0, VectorData::len);
+        println!(
+            "chunk {}: {} points, {:?}",
+            chunk.chunk_index, point_count, chunk.time_range
+        );
+    }
+
+    reader.reset();
+    Ok(())
+}
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       HspiceStreamReader                             │
-├─────────────────────────────────────────────────────────────────────┤
-│  mmap: Mmap              ← Memory-mapped file (zero memory cost)    │
-│  data_position: usize    ← Current read position                    │
-│  metadata: HeaderMetadata ← Parsed once at open()                   │
-│  pending_data: Vec<f64>  ← Incomplete row across blocks             │
-│  row_buffer: Vec<Row>    ← Rows for current chunk                   │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Iterator::next()                                                    │
-│  ├── while row_buffer.len() < min_chunk_size && !finished:          │
-│  │   ├── read_one_block() ─────────────┐                            │
-│  │   │       ↓                         │                            │
-│  │   │   Read complete data_block      │                            │
-│  │   │   (preserve block boundary)     │                            │
-│  │   │       ↓                         │                            │
-│  │   └── block_to_rows()               │                            │
-│  │       ├── Merge pending_data        │                            │
-│  │       ├── Convert to complete rows  │                            │
-│  │       └── Save incomplete tail to pending_data                   │
-│  │                                                                   │
-│  └── build_chunk(row_buffer) → DataChunk                            │
-└─────────────────────────────────────────────────────────────────────┘
-```
 
----
+The public constructors are:
 
-## Core Data Structures
+| Function | Behavior |
+| -------- | -------- |
+| `read_stream(path)` | Uses `DEFAULT_CHUNK_SIZE` (10,000 points) |
+| `read_stream_chunked(path, chunk_size)` | Sets a custom minimum chunk size |
+| `read_stream_signals(path, signals, chunk_size)` | Also filters returned signal vectors |
+| `HspiceStreamReader::open(path, chunk_size)` | Direct constructor |
 
-### DataChunk
+`metadata()` returns `StreamMetadata` with the title, date, scale name, signal
+names, POST version, and complex-data flag. `reset()` restarts at the first data
+record without reparsing the header.
+
+### `DataChunk`
 
 ```rust
 pub struct DataChunk {
-    pub chunk_index: usize,           // Chunk index (0-based)
-    pub time_range: (f64, f64),       // Time range [start, end]
-    pub data: HashMap<String, VectorData>,  // Signal data
+    pub chunk_index: usize,
+    pub time_range: (f64, f64),
+    pub data: HashMap<String, VectorData>,
 }
 ```
 
-### Internal State
+Despite the historical field name `time_range`, the pair contains the first
+and last values of the scale vector. For AC and DC files, those values are a
+frequency or sweep range rather than time.
 
-```rust
-pub struct HspiceStreamReader {
-    mmap: Mmap,                          // Memory-mapped file (zero overhead)
-    data_position: usize,                // Current position
-    metadata: HeaderMetadata,            // File header metadata
-    pending_data: Vec<f64>,              // Cross-block accumulated data
-    row_buffer: Vec<Vec<f64>>,           // Current chunk rows
-    min_chunk_size: usize,               // Minimum rows to return
-    finished: bool,                      // EOF flag
-}
-```
+The scale vector is always present in `data`. A signal filter applies only to
+dependent signals; it reduces returned data but all source columns still have
+to be decoded.
 
----
+## Python API
 
-## API Usage
-
-### Python
+The native extension raises `RuntimeError` if the file cannot be opened or its
+header is invalid:
 
 ```python
-from hspice_tr0_parser import hspice_tr0_stream
+from hspicetr0parser import stream
 
-# Stream a large file
-for chunk in hspice_tr0_stream("huge_1gb_file.tr0"):
-    print(f"Chunk {chunk['chunk_index']}: {chunk['time_range']}")
-    time = chunk['data']['TIME']
-    vout = chunk['data']['vout']
-    # Process current chunk...
-    # Previous chunks are already garbage collected
-
-# Signal filter - reduce memory further
-for chunk in hspice_tr0_stream("huge.tr0", signals=['TIME', 'vout']):
-    pass  # Only 2 signals in data
-
-# Custom chunk size
-for chunk in hspice_tr0_stream("huge.tr0", chunk_size=50000):
-    pass  # ~50000 rows per chunk
+for chunk in stream("large.tr0", chunk_size=50_000, signals=["v(out"]):
+    print(chunk["chunk_index"], chunk["time_range"])
+    scale = chunk["data"]["TIME"]
+    vout = chunk["data"]["v(out"]
 ```
 
-### Rust
+The compatibility wrapper keeps its legacy generator behavior and turns an
+open/parse failure into an empty iterator:
 
-```rust
-use hspicetr0parser::{read_stream, read_stream_signals};
+```python
+from hspice_tr0_parser import stream
 
-let reader = read_stream("file.tr0")?;
-for chunk in reader {
-    let chunk = chunk?;
-    println!("Chunk {}: {:?}", chunk.chunk_index, chunk.time_range);
-}
-
-// Signal filter
-let reader = read_stream_signals("file.tr0", &["vout"], 10000)?;
+assert list(stream("missing.tr0")) == []
 ```
 
-### C
+Each Python chunk is a dictionary with `chunk_index`, `time_range`, and a
+`data` dictionary containing NumPy arrays. Real vectors use `float64`; complex
+vectors use `complex128`.
+
+## C API
 
 ```c
-CHspiceStream* stream = hspice_stream_open("file.tr0", 10000, 0);
-
-while (hspice_stream_next(stream) == 1) {
-    int size = hspice_stream_get_chunk_size(stream);
-    double* buffer = malloc(size * sizeof(double));
-    hspice_stream_get_signal_data(stream, "vout", buffer, size);
-    // Process...
-    free(buffer);
+CWaveformStream *stream = waveform_stream_open("large.tr0", 50000, 0);
+if (stream == NULL) {
+    /* open or header parse failed */
 }
 
-hspice_stream_close(stream);
-```
-
----
-
-## Block Boundary Handling
-
-HSPICE files consist of multiple data_blocks, each may not contain complete rows:
-
-```
-Block 1: [row1_col1, row1_col2, row1_col3, row2_col1, row2_col2, row2_col3, row3_col1...]
-                                                                           ↑ incomplete
-
-Block 2: [row3_col2, row3_col3, row4_col1, row4_col2, row4_col3, row5...]
-          ↑ continuation from previous block
-```
-
-Solution: `pending_data` buffer
-
-```rust
-fn block_to_rows(&mut self, block_data: Vec<f64>) -> Vec<Vec<f64>> {
-    // 1. Merge incomplete data from previous block
-    let mut raw_data = std::mem::take(&mut self.pending_data);
-    raw_data.extend(block_data);
-
-    // 2. Calculate complete rows
-    let num_complete_rows = raw_data.len() / self.num_columns;
-
-    // 3. Save incomplete tail to pending_data
-    let complete_values = num_complete_rows * self.num_columns;
-    if complete_values < raw_data.len() {
-        self.pending_data = raw_data[complete_values..].to_vec();
-    }
-
-    // 4. Return complete rows
-    ...
+while (stream != NULL && waveform_stream_next(stream) == 1) {
+    int count = waveform_stream_get_chunk_size(stream);
+    double *values = malloc((size_t)count * sizeof(double));
+    int copied = waveform_stream_get_signal_data(
+        stream, "v(out", values, count
+    );
+    /* Process values[0..copied]. */
+    free(values);
 }
+
+waveform_stream_close(stream);
 ```
 
----
+`waveform_stream_next()` returns `1` for a chunk, `0` at end of input, and `-1`
+on a decode error. The C streaming signal accessor returns complex vectors as
+magnitudes; use the full-read `waveform_get_complex_data()` API when separate
+real and imaginary components are required.
 
-## Memory Usage Estimates
+## Boundaries and Limitations
 
-| Scenario   | File Size | Traditional | Streaming |
-| ---------- | --------- | ----------- | --------- |
-| Small      | 10MB      | ~30MB       | ~30MB     |
-| Medium     | 100MB     | ~300MB      | ~80MB     |
-| Large      | 1GB       | ~2-3GB      | ~80MB     |
-| Very Large | 10GB      | OOM         | ~80MB     |
+- Peak decoded-data memory scales with the current chunk and number of source
+  columns rather than the total file size. The OS can page the read-only memory
+  map as needed.
+- Rows that cross record boundaries are preserved in an internal partial-row
+  buffer.
+- The current iterator stops at the first HSPICE end marker. For a parameter
+  sweep containing multiple data tables, use `read()` to retrieve every table.
+- A malformed trailing partial row is ignored after trace-level diagnostics.
 
-> Streaming peak memory ≈ chunk_size × num_signals × 8 bytes
+## Verification
 
----
-
-## Verification Results
-
-```
-85 passed in 4.84s
-```
-
-- ✅ All tests pass
-- ✅ Data integrity: streamed total points = full read
-- ✅ Time continuity: no gaps between chunks
-- ✅ Value matching: streamed data = full data
-
----
-
-## File Structure
-
-```
-src/
-├── stream.rs          # True streaming implementation
-├── parser.rs          # Added parse_header_only() and pub HeaderMetadata
-├── lib.rs             # Module exports and Python bindings
-└── ffi.rs             # C FFI streaming interface
-
-tests/
-└── test_stream.py     # 19 streaming API tests
-```
+The Rust and Python suites compare streamed point counts, ranges, and values
+against full reads and exercise 9601 transient, 2001 transient, 9601 AC, and
+9601 DC fixtures. See [HOWTOTEST.md](HOWTOTEST.md) for current commands.

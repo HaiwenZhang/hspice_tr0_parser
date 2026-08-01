@@ -1,161 +1,140 @@
 # How to Test
 
-This document describes how to set up and run the test suite for the HSPICE TR0 Parser.
+This repository has Rust unit/integration tests and Python integration tests.
+The committed files in `example/` are required for the format and reference
+comparisons.
+
+CI runs the Python suite on Python 3.12, 3.13, and 3.14 across Linux, macOS,
+and Windows.
 
 ## Prerequisites
 
-- Python >= 3.10
-- Rust toolchain (for building the native extension)
-- The example test file `example/PinToPinSim.tr0`
+- Rust stable toolchain
+- Python 3.12, 3.13, or 3.14
+- A virtual environment with `maturin`, NumPy, and pytest
 
-## Quick Start
+## Set Up the Python Environment
 
 ```bash
-# Create and activate virtual environment
 python3 -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# or: .venv\Scripts\activate  # Windows
-
-# Install dependencies
-pip install maturin numpy pytest
-
-# Build the native extension
+source .venv/bin/activate
+python -m pip install maturin numpy pytest
 maturin develop --release
-
-# Run all tests
-pytest tests/ -v
 ```
 
-## Running Tests
+On Windows, activate the environment with
+`.venv\Scripts\activate` before running `maturin` or pytest.
 
-### Run All Tests
+## Run the Suites
+
+Run the core Rust tests while iterating on parser or writer code:
 
 ```bash
-pytest tests/ -v
+cargo test -p hspice-core
 ```
 
-### Run Specific Test Class
+Run every Rust crate before submitting a workspace-wide change:
 
 ```bash
-# Test reading functionality
-pytest tests/test_tr0_parser.py::TestHspiceTr0Read -v
-
-# Test conversion functionality
-pytest tests/test_tr0_parser.py::TestHspiceTr0ToRaw -v
-
-# Test data integrity
-pytest tests/test_tr0_parser.py::TestDataIntegrity -v
-
-# Test edge cases
-pytest tests/test_tr0_parser.py::TestEdgeCases -v
+cargo test --workspace
 ```
 
-### Run Specific Test
+Run the Python API and compatibility-wrapper tests after building the native
+extension:
 
 ```bash
-pytest tests/test_tr0_parser.py::TestHspiceTr0Read::test_read_tr0_file -v
+python -m pytest tests -v
 ```
 
-### Run with Coverage Report
+The Python suite is split by responsibility:
 
-```bash
-pip install pytest-cov
-pytest tests/ -v --cov=hspice_tr0_parser --cov-report=html
-```
-
-## Test Structure
-
-```
+```text
 tests/
-├── __init__.py           # Test package initialization
-├── conftest.py           # Shared pytest fixtures
-└── test_tr0_parser.py    # Main test module
+├── conftest.py        # paths, fixtures, and compatibility helpers
+├── test_read.py       # basic API and error behavior
+├── test_formats.py    # TR0/AC0/SW0 and 9601/2001 coverage
+├── test_reference.py  # comparison with committed reference data
+├── test_convert.py    # HSPICE-to-SPICE3 conversion
+└── test_stream.py     # chunks, filters, formats, and error behavior
 ```
 
-## Test Cases
+## Focused Commands
 
-### TestHspiceTr0Read
+```bash
+# Rust raw-to-HSPICE reference round trips
+cargo test -p hspice-core test_raw_to_hspice_round_trip -- --exact
 
-Tests for the `hspice_tr0_read()` function:
+# All HSPICE writer unit tests
+cargo test -p hspice-core hspice_writer::tests
 
-| Test                      | Description                      |
-| ------------------------- | -------------------------------- |
-| `test_import_module`      | Verify module can be imported    |
-| `test_read_tr0_file`      | Basic TR0 file reading           |
-| `test_result_structure`   | Validate return data structure   |
-| `test_data_dictionary`    | Check data contains numpy arrays |
-| `test_time_signal_exists` | Verify TIME signal exists        |
-| `test_data_consistency`   | All signals have same length     |
-| `test_debug_mode`         | Reading with debug enabled       |
-| `test_nonexistent_file`   | Handle missing file gracefully   |
+# Python conversion tests
+python -m pytest tests/test_convert.py -v
 
-### TestHspiceTr0ToRaw
+# Python streaming tests
+python -m pytest tests/test_stream.py -v
 
-Tests for the `hspice_tr0_to_raw()` function:
+# One Python test
+python -m pytest \
+  tests/test_stream.py::TestStreamingErrorHandling::test_nonexistent_file -v
+```
 
-| Test                            | Description                       |
-| ------------------------------- | --------------------------------- |
-| `test_import_function`          | Verify function can be imported   |
-| `test_convert_to_raw`           | Basic TR0 to RAW conversion       |
-| `test_raw_file_header`          | Validate SPICE3 raw header format |
-| `test_convert_with_debug`       | Conversion with debug mode        |
-| `test_convert_nonexistent_file` | Handle missing input file         |
-| `test_convert_to_readonly_path` | Handle invalid output path        |
+The core round-trip integration test converts each of these reference files to
+SPICE3 raw and back, then compares the generated HSPICE bytes with the source:
 
-### TestDataIntegrity
+- `example/test_9601.tr0`
+- `example/test_2001.tr0`
+- `example/test_9601.ac0`
+- `example/test_9601.sw0`
 
-Tests for data consistency:
+The writer unit tests additionally cover header layout, 8192-byte record
+splitting, AC complex values, parameter-sweep tables, and rejected transient
+complex values.
 
-| Test                        | Description                                 |
-| --------------------------- | ------------------------------------------- |
-| `test_roundtrip_data_count` | Verify point count matches after conversion |
+## CLI Smoke Tests
 
-### TestEdgeCases
+```bash
+cargo run -p hspice-cli -- info example/test_9601.tr0
+cargo run -p hspice-cli -- read example/test_9601.ac0 --json
+cargo run -p hspice-cli -- scan example/PinToPinSim.tr0
+```
 
-Tests for edge cases and special scenarios:
+For a conversion smoke test, use a temporary directory so generated files do
+not alter the repository:
 
-| Test                    | Description                     |
-| ----------------------- | ------------------------------- |
-| `test_multiple_reads`   | File can be read multiple times |
-| `test_signal_name_case` | Signal name case handling       |
-| `test_data_range_valid` | No NaN or Inf values in data    |
+```bash
+tmp_dir="$(mktemp -d)"
+cargo run -p hspice-cli -- convert \
+  example/test_9601.tr0 "$tmp_dir/test.raw"
+cargo run -p hspice-cli -- convert \
+  "$tmp_dir/test.raw" "$tmp_dir/test.tr0" --post-version 9601
+cmp example/test_9601.tr0 "$tmp_dir/test.tr0"
+```
 
-## Adding New Tests
+## Formatting and Lints
 
-1. Add new test functions to the appropriate class in `test_tr0_parser.py`
-2. Use fixtures from `conftest.py` for common test data:
-   - `example_tr0_path` - Path to the example TR0 file
-   - `tr0_data` - Parsed TR0 data
-   - `tr0_signals` - Signal dictionary
-   - `tr0_metadata` - Title, date, and scale name
-
-Example:
-
-```python
-def test_my_new_feature(self, tr0_signals):
-    """Test description"""
-    assert "time" in tr0_signals
-    assert len(tr0_signals["time"]) > 0
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ## Troubleshooting
 
-### ModuleNotFoundError: No module named '\_tr0_parser'
+### `ModuleNotFoundError: No module named 'hspicetr0parser'`
 
-The native extension has not been built. Run:
+The PyO3 extension has not been installed into the active environment. Activate
+the virtual environment and run:
 
 ```bash
 maturin develop --release
 ```
 
-### Test file not found
+### Tests are skipped because fixtures are missing
 
-Ensure `example/PinToPinSim.tr0` exists in the project root.
+Confirm that the binary fixtures and `.pickle` reference files are present in
+`example/`. The tests intentionally skip fixture-dependent cases when those
+files are absent.
 
-### Import errors
+### Python code does not reflect recent Rust changes
 
-Make sure you're in the virtual environment:
-
-```bash
-source .venv/bin/activate
-```
+Re-run `maturin develop --release`; an already installed extension is not
+rebuilt automatically when Rust source changes.

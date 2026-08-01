@@ -4,57 +4,63 @@
 
 ```mermaid
 graph TB
-    subgraph Workspace["hspice_tr0_parser (Workspace)"]
-        subgraph Core["Core Layer"]
-            HspiceCore["hspice-core<br/>Pure Rust Library"]
-        end
+    subgraph Workspace["hspice_tr0_parser workspace"]
+        Core["hspice-core<br/>parsers, writers, streaming, shared types"]
+        Python["hspice-python<br/>PyO3 + NumPy"]
+        FFI["hspice-ffi<br/>C ABI"]
+        WASM["hspice-wasm<br/>WebAssembly"]
+        CLI["hspice-cli<br/>native command-line tool"]
 
-        subgraph Bindings["Bindings Layer"]
-            Python["hspice-python<br/>PyO3 + NumPy"]
-            FFI["hspice-ffi<br/>C/C++ Static Library"]
-            WASM["hspice-wasm<br/>WebAssembly"]
-        end
+        Python --> Core
+        FFI --> Core
+        WASM --> Core
+        CLI --> Core
     end
 
-    Python --> HspiceCore
-    FFI --> HspiceCore
-    WASM --> HspiceCore
-
-    subgraph Targets["Target Runtimes"]
-        PyRuntime["Python 3.10+"]
-        RustApp["Native Rust Apps"]
-        CApp["C/C++ Apps"]
-        Browser["Web Browser"]
-    end
-
-    Python --> PyRuntime
-    HspiceCore --> RustApp
-    FFI --> CApp
-    WASM --> Browser
+    Python --> PyRuntime["Python 3.12–3.14"]
+    FFI --> NativeApps["C, C++, Go, and Java callers"]
+    WASM --> Browser["browser / JavaScript"]
+    CLI --> Shell["shell workflows"]
+    Core --> RustApps["native Rust applications"]
 ```
 
-## 2. Why Four Crates?
+The workspace contains five crates. `hspice-core` owns the format-neutral data
+model and all file-format logic; the other crates adapt that API to a specific
+runtime or interface.
 
-| Problem          | Single Crate                | Multi-Crate                              |
-| ---------------- | --------------------------- | ---------------------------------------- |
-| Dependency Bloat | PyO3/FFI/WASM forced on all | On-demand, zero deps for core            |
-| Compile Time     | Full rebuild always         | Incremental, bindings don't rebuild core |
-| Binary Size      | All binding code included   | Each target only necessary code          |
-| Test Isolation   | Tests mixed                 | Independent per layer                    |
+## 2. Crate Responsibilities
 
-## 3. Crate Details
+| Crate | Responsibility | Main public surface |
+| ----- | -------------- | ------------------- |
+| `hspice-core` | HSPICE and SPICE3 parsing/writing, streaming, shared types | `read`, `read_raw`, `read_bytes`, `read_raw_bytes`, `write_hspice`, `write_spice3_raw`, streaming functions |
+| `hspice-python` | Python objects and NumPy conversion | `read`, `read_raw`, `convert_to_raw`, `convert_raw_to_hspice`, `stream`, `init_logging` |
+| `hspice-ffi` | Stable C ABI used directly or through other native languages | `waveform_read`, `waveform_read_raw`, `waveform_get_*`, `waveform_stream_*` |
+| `hspice-wasm` | In-memory browser parsing and JavaScript object conversion | `parseHspice`, `parseRaw`, `getSignalNames`, `getSignalData` |
+| `hspice-cli` | Standalone inspection, conversion, streaming, scan, and CSV export | `info`, `read`, `read-raw`, `convert`, `stream`, `scan`, `export` |
 
-### 3.1 hspice-core
+See [CLI.md](CLI.md) for command syntax and output behavior.
 
-```toml
-[dependencies]
-byteorder = "1.5"
-memmap2 = "0.9"
-num-complex = "0.4"
-anyhow = "1.0"
+Keeping runtime-specific dependencies out of `hspice-core` lets native Rust
+users avoid PyO3, C ABI, WASM, and CLI dependencies.
+
+## 3. Core Data Flow
+
+```mermaid
+flowchart LR
+    HspiceFile["HSPICE binary<br/>.trN / .acN / .swN"] --> HspiceParser["HSPICE parser"]
+    RawFile["SPICE3 raw<br/>binary or ASCII"] --> RawParser["SPICE3 parser"]
+    Bytes["in-memory bytes"] --> HspiceParser
+    Bytes --> RawParser
+
+    HspiceParser --> Result["WaveformResult"]
+    RawParser --> Result
+
+    Result --> HspiceWriter["HSPICE writer<br/>9601 or 2001"]
+    Result --> RawWriter["SPICE3 binary writer"]
+    Result --> Bindings["Python / C ABI / WASM / CLI adapters"]
 ```
 
-**Core data structure:**
+`WaveformResult` is the interchange type:
 
 ```rust
 pub struct WaveformResult {
@@ -67,98 +73,59 @@ pub struct WaveformResult {
 }
 ```
 
-### 3.2 hspice-python
+The HSPICE writer supports transient, AC, and DC data. The output extension
+selects and validates the analysis (`.trN`, `.acN`, or `.swN`), while
+`PostVersion::V9601` and `PostVersion::V2001` select `f32` and `f64` storage.
+At present, HSPICE writing is exposed by the Rust, Python, and CLI interfaces;
+the C ABI and WASM interfaces remain read-only.
 
-```toml
-[dependencies]
-hspice-core = { path = "../hspice-core" }
-pyo3 = { features = ["extension-module", "abi3-py310"] }
-numpy = "0.23"
-```
+## 4. Core Modules
 
-Exposes: `read()`, `convert_to_raw()`, `stream()`
+| Module | Purpose |
+| ------ | ------- |
+| `parser` | Parse HSPICE headers and complete in-memory waveforms |
+| `block_reader` | Validate and iterate HSPICE framed records |
+| `data_builder` | Decode interleaved scalar/complex values into column vectors |
+| `stream` | Memory-bounded HSPICE iteration over mapped input |
+| `raw_parser` | Parse binary and ASCII SPICE3 raw files |
+| `hspice_writer` | Validate and write little-endian HSPICE 9601/2001 records |
+| `writer` | Write SPICE3 binary raw files and implement HSPICE-to-raw conversion |
+| `types` | Public result, variable, analysis, precision, and error types |
 
-### 3.3 hspice-ffi
-
-```toml
-[lib]
-crate-type = ["staticlib", "cdylib"]
-
-[dependencies]
-hspice-core = { path = "../hspice-core" }
-```
-
-Exposes: `waveform_read()`, `waveform_free()`, `waveform_get_*()` functions
-
-### 3.4 hspice-wasm
-
-```toml
-[dependencies]
-hspice-core = { path = "../hspice-core" }
-wasm-bindgen = "0.2"
-js-sys = "0.3"
-```
-
-Exposes: `parseHspice()`, `getSignalNames()`, `getSignalData()`
-
-## 4. Dependency Graph
-
-```mermaid
-graph LR
-    subgraph External["External Dependencies"]
-        memmap2["memmap2"]
-        byteorder["byteorder"]
-        numcomplex["num-complex"]
-        pyo3["pyo3"]
-        numpy["numpy"]
-        wasm["wasm-bindgen"]
-    end
-
-    Core["hspice-core"] --> memmap2
-    Core --> byteorder
-    Core --> numcomplex
-
-    Python["hspice-python"] --> Core
-    Python --> pyo3
-    Python --> numpy
-
-    FFI["hspice-ffi"] --> Core
-
-    WASM["hspice-wasm"] --> Core
-    WASM --> wasm
-```
+The main core dependencies are `byteorder`, `memmap2`, `num-complex`,
+`thiserror`, and `tracing`. Runtime crates add their own adapter dependencies,
+such as PyO3/NumPy, `wasm-bindgen`, or `clap`.
 
 ## 5. Build Artifacts
 
-| Crate           | Type        | Format         | Use Case      |
-| --------------- | ----------- | -------------- | ------------- |
-| `hspice-core`   | `rlib`      | `.rlib`        | Rust deps     |
-| `hspice-python` | `cdylib`    | `.so` / `.pyd` | Python import |
-| `hspice-ffi`    | `staticlib` | `.a`           | C/C++ linking |
-| `hspice-wasm`   | `cdylib`    | `.wasm`        | Browser       |
+| Crate | Artifact | Typical use |
+| ----- | -------- | ----------- |
+| `hspice-core` | Rust `rlib` | Rust dependency |
+| `hspice-python` | Python extension (`.so`, `.dylib`, or `.pyd`) | `import hspicetr0parser` |
+| `hspice-ffi` | Static and dynamic library (`.a`, `.so`, `.dylib`, or `.dll`) | C ABI / CGO / JNA |
+| `hspice-wasm` | `.wasm` plus generated JavaScript/TypeScript bindings | Browser applications |
+| `hspice-cli` | `hspice-cli` executable | Shell and automation |
 
-## 6. Directory Structure
+## 6. Repository Layout
 
-```
+```text
 hspice_tr0_parser/
-├── Cargo.toml               # Workspace
-├── pyproject.toml           # Python config
-├── hspice_tr0_parser.py     # Python wrapper
+├── Cargo.toml
+├── pyproject.toml
+├── hspice_tr0_parser.py        # Compatibility Python wrapper
 ├── crates/
 │   ├── hspice-core/
 │   ├── hspice-python/
 │   ├── hspice-ffi/
-│   └── hspice-wasm/
-│       ├── package.json     # npm config
-│       └── hspice_wasm.d.ts # TypeScript types
-├── include/                  # C headers
+│   ├── hspice-wasm/
+│   └── hspice-cli/
+├── include/                    # Public C header
+├── java/                       # Java/JNA wrapper
 ├── docs/
-│   ├── ARCHITECTURE.md
-│   └── api/
-├── tests/                    # Python tests
-└── example/
+├── tests/                      # Python integration tests
+└── example/                    # HSPICE fixtures and reference data
 ```
 
 ---
 
-_Document Version: 3.0.0 | Last Updated: 2025-12-13_
+_Workspace version: 1.5.0 | Last updated: 2026-08-01_

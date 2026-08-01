@@ -2,6 +2,13 @@
 
 This document covers using the HSPICE parser from Go via CGO.
 
+The Go wrapper follows the current read-only C ABI. Raw-to-HSPICE and
+HSPICE-to-raw writing are available through the CLI, Rust API, or Python API.
+
+There is no separate Go artifact because this repository does not contain a Go
+module. Download the `hspice-ffi-<version>-<target>` archive for the build host
+from GitHub Releases and link its C ABI library through CGO as shown below.
+
 ## Building the C Library
 
 ```bash
@@ -223,6 +230,8 @@ func main() {
 }
 ```
 
+If `InitLogging()` is not called, library tracing output is disabled.
+
 ### Log Levels
 
 | Level   | Description                                                |
@@ -231,7 +240,7 @@ func main() {
 | `debug` | Detailed info: file sizes, data block statistics           |
 | `info`  | Key operations: file open, parse complete, conversion done |
 | `warn`  | Warnings only                                              |
-| `error` | Errors only (default if not initialized)                   |
+| `error` | Error events                                               |
 
 ## Usage Example
 

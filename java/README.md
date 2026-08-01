@@ -10,6 +10,21 @@ Java API for parsing HSPICE and SPICE3/ngspice waveform files using JNA (Java Na
 
 ## Installation
 
+### GitHub Release
+
+Download and extract `hspice-java-1.5.0.zip`, then install its JAR and POM into
+the local Maven repository:
+
+```bash
+mvn install:install-file \
+  -Dfile=hspice-parser-1.5.0.jar \
+  -DpomFile=pom.xml
+```
+
+Also download the matching `hspice-ffi-1.5.0-<target>` archive and put its
+dynamic library on the JNA library path. GitHub Releases do not publish the Java
+artifact to Maven Central.
+
 ### Build from Source
 
 ```bash
@@ -28,7 +43,7 @@ mvn clean package
 <dependency>
     <groupId>com.hspice</groupId>
     <artifactId>hspice-parser</artifactId>
-    <version>1.2.0</version>
+    <version>1.5.0</version>
 </dependency>
 ```
 

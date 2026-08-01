@@ -55,12 +55,15 @@ enum Cmd {
         signal: Option<String>,
     },
 
-    /// Convert an HSPICE binary file to SPICE3 binary raw format.
+    /// Convert HSPICE to SPICE3 raw, or SPICE3 raw to HSPICE.
     Convert {
-        /// Input HSPICE file
+        /// Input .raw, .tr0, .ac0, or .sw0 file.
         input: String,
-        /// Output SPICE3 .raw path
+        /// Output path; its extension selects the target format.
         output: String,
+        /// HSPICE output precision (used only when the output is HSPICE).
+        #[arg(long, value_enum, default_value_t = PostVersionArg::V9601)]
+        post_version: PostVersionArg,
     },
 
     /// Stream an HSPICE file as JSON Lines, one chunk per line.
@@ -103,6 +106,25 @@ enum Cmd {
     },
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum PostVersionArg {
+    /// 32-bit values; widest compatibility with WaveView.
+    #[value(name = "9601")]
+    V9601,
+    /// 64-bit values; preserves double precision.
+    #[value(name = "2001")]
+    V2001,
+}
+
+impl From<PostVersionArg> for hspice_core::PostVersion {
+    fn from(value: PostVersionArg) -> Self {
+        match value {
+            PostVersionArg::V9601 => Self::V9601,
+            PostVersionArg::V2001 => Self::V2001,
+        }
+    }
+}
+
 static LOGGING_INIT: Once = Once::new();
 
 fn init_logging(level: &str) {
@@ -126,7 +148,11 @@ fn main() -> ExitCode {
         Cmd::ReadRaw { file, json, signal } => {
             commands::cmd_read_raw(file, *json, signal.as_deref())
         }
-        Cmd::Convert { input, output } => commands::cmd_convert(input, output),
+        Cmd::Convert {
+            input,
+            output,
+            post_version,
+        } => commands::cmd_convert(input, output, (*post_version).into()),
         Cmd::Stream {
             file,
             chunk_size,

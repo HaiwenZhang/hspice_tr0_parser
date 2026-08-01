@@ -3,8 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags:
-      - "v*"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -13,95 +11,76 @@ permissions:
   contents: read
 
 jobs:
-  # Run Rust tests first
   rust-test:
+    name: Rust workspace
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run Rust tests
-        run: cargo test -p hspice-core --verbose
-
-  # Run Python tests
-  python-test:
-    needs: rust-test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.10"
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: Create virtual environment
-        run: python -m venv .venv
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Install dependencies
-        run: |
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
-          pip install maturin numpy pytest
+      - name: Run tests
+        run: cargo test --workspace --locked
 
-      - name: Build and install
-        run: |
-          source .venv/bin/activate
-          maturin develop --release
+  python-test:
+    name: Python ${{ matrix.python }} (${{ matrix.os }})
+    needs: rust-test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: python-${{ matrix.os }}-${{ matrix.python }}
+
+      - name: Install build and test dependencies
+        run: python -m pip install --upgrade pip maturin numpy pytest
+
+      - name: Build and install extension
+        run: python -m pip install --no-build-isolation --no-deps .
 
       - name: Run Python tests
-        run: |
-          source .venv/bin/activate
-          pytest tests/ -v
+        run: python -m pytest tests -v
 
-  # Build wheels for Linux x86_64
-  linux:
+  wheel-smoke:
+    name: Build abi3 wheel and sdist
     needs: python-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Build wheels
+      - name: Build Linux x86_64 wheel
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          args: --release --out dist -i python3.10
-          manylinux: auto
+          args: --release --locked --out dist
+          manylinux: "2014"
 
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-x86_64-py3.10
-          path: dist
-
-  # Build source distribution
-  sdist:
-    needs: python-test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build sdist
+      - name: Build source distribution
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
 
-      - name: Upload sdist
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: wheels-sdist
+          name: python-distributions
           path: dist
+          if-no-files-found: error

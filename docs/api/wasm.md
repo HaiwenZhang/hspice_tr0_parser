@@ -2,6 +2,10 @@
 
 This document covers the WebAssembly API for `hspice-wasm`.
 
+The WASM interface currently parses in-memory HSPICE and SPICE3 raw data; it
+does not expose either writer. Use the CLI, Rust API, or Python API for format
+conversion.
+
 ## Building
 
 ```bash
@@ -20,15 +24,15 @@ wasm-pack build --target web
 
 ## Installation
 
-### NPM (after publishing)
+Download `hspice-wasm-<version>.tgz` from GitHub Releases and install it as a
+local npm package:
 
 ```bash
-npm install hspice-wasm
+npm install ./hspice-wasm-1.5.0.tgz
 ```
 
-### Local
-
-Copy `pkg/` contents to your project.
+The release workflow does not publish the package to the npm registry. To use a
+local source build instead, copy the generated `pkg/` contents to the project.
 
 ## API Reference
 
@@ -123,6 +127,9 @@ interface DataTable {
   signals: Record<string, Float64Array>;
 }
 ```
+
+Complex vectors are represented as magnitude-only `Float64Array` values in the
+current JavaScript object model.
 
 ## Complete Example
 

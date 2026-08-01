@@ -2,7 +2,21 @@
 
 This document covers the Python API for `hspicetr0parser`.
 
+`hspicetr0parser` is the native PyO3 extension. The repository also ships
+`hspice_tr0_parser.py`, a compatibility wrapper that keeps the deprecated
+`debug` keyword and returns an empty iterator when streaming cannot open or
+parse a file.
+
 ## Installation
+
+Download the `cp312-abi3` wheel matching the host from a GitHub Release. The
+same wheel works with CPython 3.12, 3.13, and 3.14:
+
+```bash
+python -m pip install ./hspicetr0parser-1.5.0-cp312-abi3-<platform>.whl
+```
+
+To build from source instead:
 
 ```bash
 git clone https://github.com/HaiwenZhang/hspice_tr0_parser.git
@@ -26,6 +40,8 @@ hspicetr0parser.init_logging("info")
 result = hspicetr0parser.read("simulation.tr0")
 ```
 
+If `init_logging()` is not called, library tracing output is disabled.
+
 ### Log Levels
 
 | Level   | Description                                                |
@@ -34,7 +50,7 @@ result = hspicetr0parser.read("simulation.tr0")
 | `debug` | Detailed info: file sizes, data block statistics           |
 | `info`  | Key operations: file open, parse complete, conversion done |
 | `warn`  | Warnings only                                              |
-| `error` | Errors only (default if not initialized)                   |
+| `error` | Error events                                               |
 
 ## API Reference
 
@@ -50,7 +66,8 @@ hspicetr0parser.init_logging("debug")  # Enable debug logging
 
 ### `read(filename)`
 
-Read a waveform file and return a `WaveformResult` object.
+Read an HSPICE binary waveform file and return a `WaveformResult` object, or
+`None` if reading fails.
 
 ```python
 from hspicetr0parser import read
@@ -72,6 +89,26 @@ from hspicetr0parser import convert_to_raw
 success = convert_to_raw('simulation.tr0', 'output.raw')
 ```
 
+### `convert_raw_to_hspice(input_path, output_path, post_version="9601")`
+
+Convert a SPICE3/ngspice binary or ASCII raw file to HSPICE. Use `.trN` for
+transient, `.acN` for AC, and `.swN` for DC output. Version `9601` is the
+compatibility-oriented default and stores `float32`; version `2001` stores
+`float64`.
+
+```python
+from hspicetr0parser import convert_raw_to_hspice
+
+success = convert_raw_to_hspice('simulation.raw', 'simulation.tr0')
+```
+
+The function returns `True` on success and `False` for parse, validation, or
+write failures. An unsupported `post_version` raises `RuntimeError`.
+
+The writer supports transient, AC, and DC analyses. The output extension must
+match the raw file's analysis, and all vectors must be non-empty, equal length,
+finite, and representable by the selected precision.
+
 ### `stream(filename, chunk_size=10000, signals=None)`
 
 Stream large files in chunks for memory efficiency.
@@ -83,6 +120,13 @@ for chunk in stream('large_file.tr0', chunk_size=50000):
     print(f"Chunk {chunk['chunk_index']}: {chunk['time_range']}")
     data = chunk['data']  # dict of signal_name -> numpy array
 ```
+
+The scale vector is always returned even when `signals` filters dependent
+signals. `chunk_size` is a minimum target because complete HSPICE records are
+consumed. The native extension raises `RuntimeError` on open/header errors;
+`hspice_tr0_parser.stream()` converts that failure into an empty iterator.
+Streaming currently stops at the first data-table end marker, so use `read()`
+to retrieve every table in a parameter sweep.
 
 ### `read_raw(filename)`
 
@@ -238,22 +282,37 @@ if hspicetr0parser.convert_to_raw('hspice.tr0', 'ngspice.raw'):
     print("Conversion successful!")
 ```
 
+### Converting SPICE3 Raw to HSPICE
+
+```python
+import hspicetr0parser
+
+if hspicetr0parser.convert_raw_to_hspice(
+    'ngspice.raw',
+    'hspice.tr0',
+    post_version='2001',
+):
+    print("Conversion successful!")
+```
+
 ## Supported Formats
 
-| Extension | Analysis  | Data Type |
-| --------- | --------- | --------- |
-| `.tr0`    | Transient | Real      |
-| `.ac0`    | AC        | Complex   |
-| `.sw0`    | DC Sweep  | Real      |
+| Format | Read | Write |
+| ------ | ---- | ----- |
+| HSPICE 9007/9601 binary (`.trN`, `.acN`, `.swN`) | Yes | 9601 output |
+| HSPICE 2001 binary (`.trN`, `.acN`, `.swN`) | Yes | Yes |
+| SPICE3 raw binary | Yes | Yes, from HSPICE via `convert_to_raw` |
+| SPICE3 raw ASCII | Yes | No |
 
 ## Requirements
 
-- Python >= 3.10
+- Python 3.12, 3.13, or 3.14
 - NumPy >= 2.0
 
-## Migration from v1.3.x
+## Logging Migration
 
-The `debug` parameter has been removed from all functions. Use `init_logging()` instead:
+The native extension does not accept the old `debug` parameter. Use
+`init_logging()` instead:
 
 ```python
 # Old (v1.3.x)
@@ -263,3 +322,7 @@ result = read('file.tr0', debug=1)
 init_logging("info")
 result = read('file.tr0')
 ```
+
+Code that still imports `hspice_tr0_parser` can temporarily use the deprecated
+`debug` keyword because the compatibility wrapper translates it to
+`init_logging()`.

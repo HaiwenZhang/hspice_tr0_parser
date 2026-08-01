@@ -1,6 +1,8 @@
-# HSPICE Binary Output File Format
+# HSPICE Binary Waveform Format (TR0/AC0/SW0)
 
-This document describes the binary file format used by HSPICE for storing simulation results (`.tr0`, `.ac0`, `.sw0` files).
+This document describes the binary format used by HSPICE for transient
+(`.trN`), AC (`.acN`), and DC sweep (`.swN`) results. The most common first-run
+extensions are `.tr0`, `.ac0`, and `.sw0`.
 
 ## Overview
 
@@ -8,11 +10,13 @@ HSPICE is a circuit simulator that produces output files containing voltage and 
 
 ### Supported Analysis Types
 
-| Extension           | Analysis Type      | Data Type           |
-| ------------------- | ------------------ | ------------------- |
-| `.tr0`, `.tr1`, ... | Transient Analysis | Real (float32)      |
-| `.ac0`, `.ac1`, ... | AC Analysis        | Complex (2×float32) |
-| `.sw0`, `.sw1`, ... | DC Sweep Analysis  | Real (float32)      |
+| Extension           | Analysis Type      | Value layout |
+| ------------------- | ------------------ | ------------ |
+| `.tr0`, `.tr1`, ... | Transient Analysis | Real         |
+| `.ac0`, `.ac1`, ... | AC Analysis        | Complex signals |
+| `.sw0`, `.sw1`, ... | DC Sweep Analysis  | Real         |
+
+The scalar width follows the POST version described below.
 
 ### Format Versions
 
@@ -21,6 +25,31 @@ HSPICE is a circuit simulator that produces output files containing voltage and 
 | `9007`  | Legacy format   | 4-byte float  |
 | `9601`  | Standard format | 4-byte float  |
 | `2001`  | Extended format | 8-byte double |
+
+### Writing Compatible Files
+
+The Rust core writes this record format with `write_hspice`, and the CLI can
+convert a SPICE3/ngspice raw file directly:
+
+```bash
+hspice-cli convert simulation.raw simulation.tr0
+hspice-cli convert simulation.raw simulation.tr0 --post-version 2001
+```
+
+Generated records are little-endian, use an 8192-byte maximum payload, and
+include the precision-specific end marker. The output extension must match the
+analysis (`.trN` transient, `.acN` AC, `.swN` DC). `PostVersion::V9601`
+downcasts values to `f32`; `PostVersion::V2001` stores `f64` values.
+
+The writer accepts transient, AC, and DC `WaveformResult` values. It rejects
+operating-point, noise, and unknown analyses; empty or inconsistent tables;
+non-finite or unrepresentable values; non-ASCII names or names containing
+whitespace; and non-AC complex values with a non-zero imaginary component.
+Multiple tables require a sweep parameter and a sweep value for every table.
+
+Compatibility tests round-trip the 9601 TR0, 2001 TR0, 9601 AC0, and 9601 SW0
+fixtures through SPICE3 raw and reproduce every original HSPICE file byte for
+byte. Unit tests also cover generated AC complex data and multi-table sweeps.
 
 ## File Structure
 
@@ -32,7 +61,7 @@ The binary file consists of ordered blocks: a **header block** followed by multi
 ```
 ┌─────────────────────────────────────────────────────┐
 │                  Header Block                        │
-│  (UTF-8 text metadata, terminated by $&%# marker)   │
+│  (text metadata, terminated by $&%# marker)         │
 ├─────────────────────────────────────────────────────┤
 │                  Data Block 1                        │
 ├─────────────────────────────────────────────────────┤
@@ -46,7 +75,8 @@ The binary file consists of ordered blocks: a **header block** followed by multi
 
 ## Block Structure
 
-Each block consists of three sections: a 16-byte **block head**, a variable-length **data section**, and a 4-byte **block tail**.
+Each block consists of a 16-byte **block header**, a variable-length **data
+section**, and a 4-byte **block trailer**.
 
 ![Block structure](figures/Block.png)
 <sub>Figure 2: Generic block structure</sub>
@@ -55,8 +85,8 @@ Each block consists of three sections: a 16-byte **block head**, a variable-leng
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         Block Header (16 bytes)                       │
 ├────────────────┬────────────────┬────────────────┬───────────────────┤
-│  Endian Check  │  Endian Check  │  Endian Check  │  Data Size (N)    │
-│  0x00000004    │    Padding     │  0x00000004    │  (4 bytes)        │
+│  Endian Check  │  Item Count    │  Endian Check  │  Data Size (N)    │
+│  0x00000004    │  (4 bytes)     │  0x00000004    │  (4 bytes)        │
 │  (4 bytes)     │   (4 bytes)    │  (4 bytes)     │                   │
 ├────────────────┴────────────────┴────────────────┴───────────────────┤
 │                         Data Section (N bytes)                        │
@@ -72,7 +102,7 @@ Each block consists of three sections: a 16-byte **block head**, a variable-leng
 | Offset | Size (bytes) | Description                                                  |
 | ------ | ------------ | ------------------------------------------------------------ |
 | 0      | 4            | Endianness marker (`0x00000004` for LE, `0x04000000` for BE) |
-| 4      | 4            | Padding / reserved                                           |
+| 4      | 4            | Number of payload items (not required by the current reader) |
 | 8      | 4            | Endianness marker (same as offset 0)                         |
 | 12     | 4            | Number of data bytes in this block                           |
 
@@ -93,7 +123,9 @@ if (blockHeader[0] == 0x00000004 && blockHeader[2] == 0x00000004) {
 
 ## Header Block
 
-The header block is unique because its data section contains **UTF-8 plain text** instead of binary data. This metadata describes the simulation and signal names.
+The header block is unique because its data section contains fixed-width,
+ASCII-compatible text instead of waveform values. This metadata describes the
+simulation and signal names.
 
 ### Header String Structure
 
@@ -229,7 +261,9 @@ Data begins immediately without sweep value prefix:
 
 ## ASCII Format
 
-Setting `.option post=2` produces ASCII output instead of binary.
+Some HSPICE configurations produce ASCII output instead of binary. The layout
+below is included for format context; this repository currently reads and
+writes only binary HSPICE. ASCII HSPICE input is rejected.
 
 ![ASCII file structure](figures/ASCII_File.png)
 <sub>Figure 4: Overall ASCII file structure</sub>
@@ -256,25 +290,28 @@ Key differences from binary format:
 3. Detect endianness from bytes 0-3 and 8-11
 4. Read header data section until "$&%#" marker
 5. Parse header: extract signal count, names, format version
-6. Loop: Read data blocks
+6. For each declared sweep table, read data blocks
    a. Read block header (16 bytes)
    b. Read N bytes of float data
    c. Read block tail (4 bytes), verify matches header
-   d. If last value > 9e29, end of current sweep
+   d. If the precision-specific marker is reached, end the current table
 7. Convert interleaved data to per-signal arrays
 ```
 
-## Limitations
+## Implementation Support
 
-This format description covers:
+| Capability | Reader | Writer |
+| ---------- | ------ | ------ |
+| Binary 9007/9601 (`f32`) | Yes | Writes 9601 |
+| Binary 2001 (`f64`) | Yes | Yes |
+| Little-endian records | Yes | Yes |
+| Big-endian records | Yes | No |
+| ASCII HSPICE | No | No |
+| Transient, AC, and DC | Yes | Yes |
+| Parameter-sweep tables | Full read: yes | Yes |
 
-- ✅ Binary format (`.option post=1`)
-- ✅ ASCII format (`.option post=2`)
-- ✅ Transient analysis (`.tr0`)
-- ✅ AC analysis (`.ac0`)
-- ✅ DC sweep analysis (`.sw0`)
-- ✅ Single-dimensional sweeps
-- ⚠️ Multi-dimensional sweeps (`.alter`) produce separate files
+The streaming reader currently stops at the first data-table end marker; use
+the full `read()` API for every table in a parameter sweep.
 
 ## References
 

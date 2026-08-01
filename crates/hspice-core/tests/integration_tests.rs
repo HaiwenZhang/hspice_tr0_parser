@@ -10,7 +10,10 @@
     deprecated,
     reason = "this compatibility test intentionally exercises the deprecated entry point"
 )]
-use hspice_core::{read, read_and_convert, read_bytes, read_debug, AnalysisType, VectorData};
+use hspice_core::{
+    convert_raw_to_hspice, read, read_and_convert, read_bytes, read_debug, AnalysisType,
+    PostVersion, VectorData,
+};
 use hspice_core::{read_stream, read_stream_chunked};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -503,4 +506,36 @@ fn test_convert_creates_valid_file() {
     );
 
     let _ = std::fs::remove_file(&output);
+}
+
+#[test]
+fn test_raw_to_hspice_round_trip() {
+    for (name, post_version) in [
+        ("test_9601.tr0", PostVersion::V9601),
+        ("test_2001.tr0", PostVersion::V2001),
+        ("test_9601.ac0", PostVersion::V9601),
+        ("test_9601.sw0", PostVersion::V9601),
+    ] {
+        let input = test_file(name);
+        if skip_if_missing(&input) {
+            continue;
+        }
+
+        let raw_output = std::env::temp_dir().join(format!("hspice_round_trip_{name}.raw"));
+        let hspice_output = std::env::temp_dir().join(format!("hspice_round_trip_{name}"));
+        read_and_convert(input.to_str().unwrap(), raw_output.to_str().unwrap()).unwrap();
+        convert_raw_to_hspice(
+            raw_output.to_str().unwrap(),
+            hspice_output.to_str().unwrap(),
+            post_version,
+        )
+        .unwrap();
+
+        let original_bytes = std::fs::read(&input).unwrap();
+        let converted_bytes = std::fs::read(&hspice_output).unwrap();
+        let _ = std::fs::remove_file(raw_output);
+        let _ = std::fs::remove_file(hspice_output);
+
+        assert_eq!(converted_bytes, original_bytes, "round trip changed {name}");
+    }
 }

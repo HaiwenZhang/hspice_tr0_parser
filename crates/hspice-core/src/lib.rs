@@ -12,7 +12,7 @@
 //! - Memory-mapped file I/O for efficient large file handling
 //! - Support for both 9601 (float32) and 2001 (float64) formats
 //! - Streaming reader for processing very large files
-//! - Format conversion to SPICE3 binary raw format
+//! - Bidirectional conversion between HSPICE and SPICE3 raw formats
 //! - Structured logging via `tracing` for diagnostics
 //!
 //! ## Quick Start
@@ -62,6 +62,7 @@
 
 mod block_reader;
 mod data_builder;
+mod hspice_writer;
 mod parser;
 mod raw_parser;
 mod reader;
@@ -101,7 +102,8 @@ pub use stream::{
     StreamMetadata, DEFAULT_CHUNK_SIZE,
 };
 
-// Re-export writer
+// Re-export writers
+pub use hspice_writer::write_hspice;
 pub use writer::write_spice3_raw;
 
 // ============================================================================
@@ -169,6 +171,25 @@ pub fn read_debug(filename: &str, _debug: i32) -> Result<WaveformResult> {
 /// * `Err(WaveformError)` - If conversion fails
 pub fn read_and_convert(input_path: &str, output_path: &str) -> Result<()> {
     writer::hspice_to_raw_impl(input_path, output_path)
+}
+
+/// Converts a SPICE3/ngspice raw file to HSPICE binary format.
+///
+/// `V9601` is the most broadly compatible output format. Use `V2001` when
+/// preserving `f64` precision is more important than compatibility with older
+/// tools.
+///
+/// # Errors
+///
+/// Returns an error if the raw file is malformed, its analysis cannot be
+/// represented by HSPICE, or the output cannot be written.
+pub fn convert_raw_to_hspice(
+    input_path: &str,
+    output_path: &str,
+    post_version: PostVersion,
+) -> Result<()> {
+    let result = read_raw(input_path)?;
+    write_hspice(&result, output_path, post_version)
 }
 
 /// Convert an HSPICE binary file to SPICE3 raw format with debug output.

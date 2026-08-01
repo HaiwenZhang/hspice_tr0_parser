@@ -1,238 +1,176 @@
-# SPICE3 Binary Raw File Format
+# SPICE3 Raw File Format
 
-This document describes the SPICE3 binary raw file format (`.raw`), commonly used by ngspice, LTspice, and other SPICE-compatible simulators.
-
-## Overview
-
-The SPICE3 raw format is a flexible format for storing simulation results. It consists of:
-
-1. **Text Header** - Human-readable metadata
-2. **Binary Data** - Simulation waveforms in binary format
-
-This format is widely supported and serves as an interchange format between different SPICE tools.
+This document describes the SPICE3/ngspice raw subset read and written by this
+repository. Both binary and ASCII (`Values:`) input are accepted; generated raw
+files are binary.
 
 ## File Structure
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Text Header                        │
-│              (ASCII, line-separated)                 │
-├─────────────────────────────────────────────────────┤
-│                 "Binary:" marker                     │
-├─────────────────────────────────────────────────────┤
-│                   Binary Data                        │
-│              (IEEE 754 floats)                       │
-└─────────────────────────────────────────────────────┘
-```
+A raw file starts with a line-oriented text header and ends with either binary
+or ASCII waveform values:
 
-## Text Header
-
-The header consists of key-value pairs, one per line:
-
-```
+```text
 Title: <simulation title>
 Date: <date string>
 Plotname: <analysis type>
-Flags: <data type flags>
+Flags: real | complex
 No. Variables: <count>
 No. Points: <count>
 Variables:
     <index>    <name>    <type>
     ...
 Binary:
+<little-endian binary values>
 ```
 
-### Header Fields
+For ASCII data, `Values:` replaces `Binary:` and the samples follow as text.
 
-| Field           | Required | Description                                 |
-| --------------- | -------- | ------------------------------------------- |
-| `Title`         | Yes      | Simulation title or description             |
-| `Date`          | Yes      | Date/time stamp of simulation               |
-| `Plotname`      | Yes      | Type of analysis (see below)                |
-| `Flags`         | Yes      | Data format: `real` or `complex`            |
-| `No. Variables` | Yes      | Total number of variables (including scale) |
-| `No. Points`    | Yes      | Number of data points per variable          |
-| `Variables`     | Yes      | Variable definitions (see below)            |
-| `Command`       | No       | Original SPICE command                      |
-| `Option`        | No       | Simulation options                          |
+## Header Fields
 
-### Plotname Values
+| Field | Used by the parser | Description |
+| ----- | ------------------ | ----------- |
+| `Title` | Yes | Simulation title |
+| `Date` | Yes | Date/time text |
+| `Plotname` | Yes | Used to infer the analysis |
+| `Flags` | Yes | A `complex` token selects complex decoding; otherwise values are real |
+| `No. Variables` | Yes | Number of vectors including the scale |
+| `No. Points` | Yes | Number of points per vector |
+| `Variables` | Yes | Indexed name/type definitions |
+| `Command`, `Option`, and other fields | Ignored | May be present in third-party files |
 
-| Plotname                 | Description                    |
-| ------------------------ | ------------------------------ |
-| `Transient Analysis`     | Time-domain simulation (.TRAN) |
-| `AC Analysis`            | Frequency sweep (.AC)          |
-| `DC Analysis`            | DC operating point (.DC)       |
-| `DC transfer curve`      | DC sweep simulation            |
-| `Operating Point`        | DC operating point (.OP)       |
-| `Noise Spectral Density` | Noise analysis (.NOISE)        |
+Recognized plot names include transient, AC, DC, operating-point, and noise
+variants. Variable types recognized by the shared model are `time`,
+`frequency`, `voltage`, and `current`; other values become `unknown`.
 
-### Flags Field
+The first variable is the scale vector, normally `time`, `frequency`, or a DC
+sweep parameter.
 
-| Flag      | Description                         |
-| --------- | ----------------------------------- |
-| `real`    | All data is real-valued (64-bit)    |
-| `complex` | Data is complex-valued (2×64-bit)   |
-| `padded`  | Data may have padding (rarely used) |
+## Binary Data
 
-### Variable Definitions
+The parser expects little-endian IEEE 754 `f64` values interleaved by point.
 
-After the `Variables:` line, each variable is defined on its own line:
+For `Flags: real`:
 
-```
-    <index>    <name>    <type>
-```
-
-| Field     | Description                            |
-| --------- | -------------------------------------- |
-| `<index>` | 0-based variable index                 |
-| `<name>`  | Variable name (e.g., `time`, `v(out)`) |
-| `<type>`  | Variable type (see below)              |
-
-### Variable Types
-
-| Type        | Description             |
-| ----------- | ----------------------- |
-| `time`      | Time variable (seconds) |
-| `frequency` | Frequency variable (Hz) |
-| `voltage`   | Node voltage (V)        |
-| `current`   | Branch current (A)      |
-| `device`    | Device parameter        |
-
-**Note**: The first variable (index 0) is always the scale variable (time, frequency, etc.).
-
-## Binary Data Section
-
-### Binary Marker
-
-The binary data section begins immediately after the line containing only `Binary:`.
-
-### Data Format
-
-#### Real Data (`Flags: real`)
-
-Data is stored as 64-bit IEEE 754 double-precision floats in **little-endian** byte order.
-
-For each data point, values are stored in variable order:
-
-```
-Point 0: [var_0] [var_1] [var_2] ... [var_n-1]
-Point 1: [var_0] [var_1] [var_2] ... [var_n-1]
+```text
+point 0: var0, var1, ... varN
+point 1: var0, var1, ... varN
 ...
-Point m-1: [var_0] [var_1] [var_2] ... [var_n-1]
 ```
 
-Where:
+Each scalar occupies 8 bytes, so the data section size is:
 
-- `n` = Number of variables
-- `m` = Number of points
-- Each value is 8 bytes (64-bit double)
-
-**Total binary size**: `n × m × 8` bytes
-
-#### Complex Data (`Flags: complex`)
-
-For complex data, each value consists of two 64-bit doubles:
-
-```
-[real_part][imaginary_part]
+```text
+number_of_points × number_of_variables × 8
 ```
 
-**Total binary size**: `n × m × 16` bytes
+For `Flags: complex`, every variable—including the scale—is stored as a pair:
 
-### Byte Order
-
-SPICE3 raw files use **little-endian** byte order for binary data.
-
-## Complete Example
-
-### Header Example
-
-```
-Title: RC Low-pass Filter Simulation
-Date: Sat Dec  7 23:30:00 2025
-Plotname: Transient Analysis
-Flags: real
-No. Variables: 3
-No. Points: 1001
-Variables:
-	0	time	time
-	1	v(out)	voltage
-	2	i(r1)	current
-Binary:
-<binary data follows>
+```text
+real(var0), imag(var0), real(var1), imag(var1), ...
 ```
 
-### Parsing Pseudocode
+Each complex value occupies 16 bytes. When the library writes a complex raw
+file from a real scale vector, the scale's imaginary component is `0.0`.
+
+## ASCII Data
+
+The parser recognizes a `Values:` section and accepts indexed SPICE3-style
+rows. Real values are parsed as `f64`. Complex values can use `real,imag`,
+`(real,imag)`, or a single real value (which implies a zero imaginary part).
+
+The library does not currently write ASCII raw files.
+
+## Library APIs
+
+### Read raw data
+
+```rust
+let result = hspice_core::read_raw("simulation.raw")?;
+let result_from_memory = hspice_core::read_raw_bytes(&bytes)?;
+```
+
+Python and CLI equivalents are:
 
 ```python
-def parse_raw_file(filename):
-    with open(filename, 'rb') as f:
-        # Read header until "Binary:" line
-        header = {}
-        variables = []
-
-        while True:
-            line = read_line(f)
-            if line.startswith("Binary:"):
-                break
-
-            if line.startswith("Title:"):
-                header['title'] = line[6:].strip()
-            elif line.startswith("Variables:"):
-                # Read variable definitions
-                pass
-            # ... parse other fields
-
-        # Read binary data
-        num_vars = header['num_variables']
-        num_points = header['num_points']
-        is_complex = header['flags'] == 'complex'
-
-        bytes_per_value = 16 if is_complex else 8
-        data = np.zeros((num_points, num_vars))
-
-        for point in range(num_points):
-            for var in range(num_vars):
-                value = struct.unpack('<d', f.read(8))[0]
-                data[point, var] = value
-
-        return header, variables, data
+result = hspicetr0parser.read_raw("simulation.raw")
 ```
-
-## Compatibility Notes
-
-### ngspice
-
-ngspice uses this format as its native output format. Files can be viewed with:
 
 ```bash
-ngspice -b circuit.cir -r output.raw
+hspice-cli read-raw simulation.raw --json
 ```
 
-### LTspice
+### Write or convert to raw
 
-LTspice also uses a compatible raw format but may include additional header fields like `Offset` and `Scale`.
+`write_spice3_raw()` writes a `WaveformResult` as binary raw. The convenience
+function `read_and_convert()` parses HSPICE and writes raw:
 
-### This Library's Output
+```rust
+use hspice_core::{read_and_convert, write_spice3_raw};
 
-The `hspice_tr0_to_raw` function in this library generates SPICE3-compatible files with:
+read_and_convert("simulation.tr0", "simulation.raw")?;
 
-- `Flags: real` (complex data is converted to magnitude)
-- Little-endian byte order
-- 64-bit double precision for all values
+let waveform = hspice_core::read("simulation.ac0")?;
+write_spice3_raw(&waveform, "simulation.raw")?;
+```
 
-## Data Type Summary
+The writer preserves complex real and imaginary components. If any vector in
+the selected table is complex, the output uses `Flags: complex` and represents
+real vectors with a zero imaginary component.
 
-| Data Type        | Size (bytes) | Format                |
-| ---------------- | ------------ | --------------------- |
-| Scale (real)     | 8            | IEEE 754 double (f64) |
-| Signal (real)    | 8            | IEEE 754 double (f64) |
-| Scale (complex)  | 16           | 2× IEEE 754 double    |
-| Signal (complex) | 16           | 2× IEEE 754 double    |
+Only the first `WaveformResult` data table is written to a raw file. Therefore,
+converting an HSPICE parameter sweep with multiple tables does not preserve the
+additional tables in the SPICE3 output.
 
-## References
+### Convert raw to HSPICE
 
-- [ngspice Manual - Raw File Format](http://ngspice.sourceforge.net/docs/ngspice-manual.pdf)
-- [SPICE3 Source Code](https://embedded.eecs.berkeley.edu/pubs/downloads/spice/)
-- [LTspice Raw File Format Notes](https://www.analog.com/en/design-center/design-tools-and-calculators/ltspice-simulator.html)
+Raw-to-HSPICE conversion is available through the Rust, Python, and CLI APIs:
+
+```rust
+use hspice_core::{convert_raw_to_hspice, PostVersion};
+
+convert_raw_to_hspice(
+    "simulation.raw",
+    "simulation.tr0",
+    PostVersion::V9601,
+)?;
+```
+
+```python
+import hspicetr0parser
+
+ok = hspicetr0parser.convert_raw_to_hspice(
+    "simulation.raw", "simulation.tr0", "9601"
+)
+```
+
+```bash
+hspice-cli convert simulation.raw simulation.tr0
+hspice-cli convert simulation.raw simulation.tr0 --post-version 2001
+```
+
+The raw plot analysis and HSPICE output extension must agree:
+
+| Raw analysis | HSPICE extension |
+| ------------ | ---------------- |
+| Transient | `.trN` (commonly `.tr0`) |
+| AC | `.acN` (commonly `.ac0`) |
+| DC | `.swN` (commonly `.sw0`) |
+
+Operating-point, noise, and unknown analyses cannot currently be written as
+HSPICE. HSPICE output also requires non-empty, equal-length vectors, finite
+values, and variable names that can be normalized to non-empty ASCII names
+without whitespace. See [HSPICE_TR0_FORMAT.md](HSPICE_TR0_FORMAT.md) for the
+record layout and writer constraints.
+
+## Generated Raw Compatibility
+
+Files produced by this repository have these properties:
+
+- `Binary:` data section
+- little-endian `f64` storage
+- `Flags: real` or `Flags: complex`, based on the table vectors
+- one plot and one data table
+- standard variable index, name, and type lines
+
+These choices match the subset consumed by this repository's parser and the
+SPICE3/ngspice interchange workflow covered by the round-trip tests.

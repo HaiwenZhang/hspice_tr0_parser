@@ -2,17 +2,38 @@
 
 This document covers the Java API for `hspice-parser`.
 
+The Java/JNA layer follows the current read-only C ABI. Format writing and
+conversion are available through the CLI, Rust API, or Python API.
+
 ## Installation
 
-### Maven
+GitHub Releases attach both `hspice-parser-<version>.jar` and a
+`hspice-java-<version>.zip` containing the JAR, Maven POM, README, and license.
+The wrapper uses JNA and does not embed native code, so also download the
+matching `hspice-ffi-<version>-<target>` archive and put its dynamic library on
+the JNA library path.
+
+### Install into a Local Maven Repository
+
+After extracting the Java ZIP:
+
+```bash
+mvn install:install-file \
+  -Dfile=hspice-parser-1.5.0.jar \
+  -DpomFile=pom.xml
+```
+
+Then add it to the application:
 
 ```xml
 <dependency>
     <groupId>com.hspice</groupId>
     <artifactId>hspice-parser</artifactId>
-    <version>1.2.0</version>
+    <version>1.5.0</version>
 </dependency>
 ```
+
+The release workflow does not publish this artifact to Maven Central.
 
 ### Build from Source
 

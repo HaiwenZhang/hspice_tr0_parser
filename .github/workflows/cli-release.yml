@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, e.g. 1.3.0 (tag will be cli-v<version>)"
+        description: "Release version, e.g. 1.5.0 (tag will be cli-v<version>)"
         required: true
         type: string
       prerelease:
@@ -28,13 +28,19 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
             archive: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-15
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
             archive: tar.gz
     steps:
       - uses: actions/checkout@v4

@@ -3,7 +3,8 @@
 use std::sync::{Arc, Once};
 
 use hspice_core::{
-    self, DataChunk, DataTable, HspiceStreamReader, Variable, VectorData, WaveformResult,
+    self, DataChunk, DataTable, HspiceStreamReader, PostVersion, Variable, VectorData,
+    WaveformResult,
 };
 use numpy::ndarray::Array1;
 use numpy::IntoPyArray;
@@ -47,7 +48,7 @@ pub fn init_logging(level: &str) -> PyResult<()> {
 // ============================================================================
 
 /// Python wrapper for Variable
-#[pyclass(name = "Variable")]
+#[pyclass(name = "Variable", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyVariable {
     #[pyo3(get)]
@@ -304,6 +305,32 @@ pub fn convert_to_raw(_py: Python, input_path: &str, output_path: &str) -> PyRes
     }
 }
 
+/// Convert a SPICE3/ngspice raw file to HSPICE binary format.
+#[pyfunction]
+#[pyo3(signature = (input_path, output_path, post_version="9601"))]
+pub fn convert_raw_to_hspice(
+    input_path: &str,
+    output_path: &str,
+    post_version: &str,
+) -> PyResult<bool> {
+    let post_version = match post_version {
+        "9601" => PostVersion::V9601,
+        "2001" => PostVersion::V2001,
+        value => {
+            return Err(PyRuntimeError::new_err(format!(
+                "unsupported post_version {value:?}; expected '9601' or '2001'"
+            )))
+        }
+    };
+    match hspice_core::convert_raw_to_hspice(input_path, output_path, post_version) {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            tracing::error!("Conversion error: {error:?}");
+            Ok(false)
+        }
+    }
+}
+
 /// Stream a large waveform file in chunks
 #[pyfunction]
 #[pyo3(signature = (filename, chunk_size=10000, signals=None))]
@@ -354,6 +381,7 @@ pub fn hspicetr0parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read, m)?)?;
     m.add_function(wrap_pyfunction!(read_raw, m)?)?;
     m.add_function(wrap_pyfunction!(convert_to_raw, m)?)?;
+    m.add_function(wrap_pyfunction!(convert_raw_to_hspice, m)?)?;
     m.add_function(wrap_pyfunction!(stream, m)?)?;
 
     // Classes

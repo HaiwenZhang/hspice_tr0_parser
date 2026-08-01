@@ -5,7 +5,7 @@ Rust implementation with PyO3 by Haiwen Zhang
 
 import hspicetr0parser as _lib
 
-__all__ = ['read', 'read_raw', 'convert_to_raw', 'stream', 'init_logging', 'WaveformResult', 'Variable', 'DataTable']
+__all__ = ['read', 'read_raw', 'convert_to_raw', 'convert_raw_to_hspice', 'stream', 'init_logging', 'WaveformResult', 'Variable', 'DataTable']
 
 # Re-export classes
 WaveformResult = _lib.WaveformResult
@@ -90,6 +90,19 @@ def convert_to_raw(input_path, output_path, debug=0):
         levels = {1: "info", 2: "debug"}
         _lib.init_logging(levels.get(debug, "info"))
     return _lib.convert_to_raw(input_path, output_path)
+
+
+def convert_raw_to_hspice(input_path, output_path, post_version="9601", debug=0):
+    """Convert a SPICE3/ngspice raw file to HSPICE binary format.
+
+    Use a ``.tr0`` output for transient data, ``.ac0`` for AC data, or
+    ``.sw0`` for DC data. ``post_version="9601"`` provides the broadest
+    WaveView compatibility; ``"2001"`` preserves double precision.
+    """
+    if debug > 0:
+        levels = {1: "info", 2: "debug"}
+        _lib.init_logging(levels.get(debug, "info"))
+    return _lib.convert_raw_to_hspice(input_path, output_path, post_version)
 
 
 def stream(filename, chunk_size=10000, signals=None, debug=0):

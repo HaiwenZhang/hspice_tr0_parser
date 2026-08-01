@@ -2,6 +2,17 @@
 
 This document covers the C FFI for `hspice-ffi`.
 
+The current C ABI exposes HSPICE/SPICE3 readers and HSPICE streaming. It does
+not expose either writer; use the CLI, Rust API, or Python API for format
+conversion.
+
+## Download
+
+GitHub Releases provide `hspice-ffi-<version>-<target>` archives for Linux
+x86_64/aarch64, macOS Intel/Apple Silicon, and Windows x86_64. Each archive
+contains this API document, the public header, and both the static and dynamic
+library for that target.
+
 ## Building
 
 ```bash
@@ -32,6 +43,8 @@ int main() {
 }
 ```
 
+If `waveform_init_logging()` is not called, library tracing output is disabled.
+
 ### Log Levels
 
 | Level   | Description                                                |
@@ -40,7 +53,7 @@ int main() {
 | `debug` | Detailed info: file sizes, data block statistics           |
 | `info`  | Key operations: file open, parse complete, conversion done |
 | `warn`  | Warnings only                                              |
-| `error` | Errors only (default if not initialized)                   |
+| `error` | Error events                                               |
 
 ## API Reference
 
@@ -142,6 +155,10 @@ int waveform_stream_get_signal_data(const CWaveformStream* stream,
                                      const char* signal_name,
                                      double* out_buffer, int max_count);
 ```
+
+The streaming signal accessor returns complex vectors as magnitudes. Use
+`waveform_get_complex_data()` after a full read when separate real and
+imaginary components are required.
 
 ## Constants
 

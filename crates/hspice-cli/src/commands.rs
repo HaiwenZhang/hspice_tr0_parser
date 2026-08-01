@@ -6,7 +6,7 @@ use std::path::Path;
 
 use hspice_core::{
     parse_header_only, read, read_and_convert, read_raw, read_stream_chunked, read_stream_signals,
-    Result, VectorData, WaveformError, WaveformResult, COMPLEX_VAR,
+    AnalysisType, PostVersion, Result, VectorData, WaveformError, WaveformResult, COMPLEX_VAR,
 };
 use memmap2::Mmap;
 
@@ -94,9 +94,73 @@ fn emit_result(
 // convert
 // ---------------------------------------------------------------------------
 
-pub fn cmd_convert(input: &str, output: &str) -> Result<()> {
-    read_and_convert(input, output)?;
+pub fn cmd_convert(input: &str, output: &str, post_version: PostVersion) -> Result<()> {
+    let input_extension = extension(input);
+    let output_extension = extension(output);
+
+    if is_raw_extension(input_extension) && is_hspice_extension(output_extension) {
+        let result = read_raw(input)?;
+        validate_output_analysis(output_extension, &result)?;
+        hspice_core::write_hspice(&result, output, post_version)?;
+    } else if is_hspice_extension(input_extension) && is_raw_extension(output_extension) {
+        read_and_convert(input, output)?;
+    } else {
+        return Err(WaveformError::FormatError(
+            "conversion requires .raw -> .tr0/.ac0/.sw0 or .tr0/.ac0/.sw0 -> .raw".into(),
+        ));
+    }
     eprintln!("Converted {} -> {}", input, output);
+    Ok(())
+}
+
+fn extension(path: &str) -> Option<&str> {
+    Path::new(path).extension()?.to_str()
+}
+
+fn is_raw_extension(extension: Option<&str>) -> bool {
+    extension.is_some_and(|value| value.eq_ignore_ascii_case("raw"))
+}
+
+fn is_hspice_extension(extension: Option<&str>) -> bool {
+    let Some(extension) = extension else {
+        return false;
+    };
+    let bytes = extension.as_bytes();
+    let prefix = &bytes[..bytes.len().min(2)];
+    bytes.len() >= 3
+        && (prefix.eq_ignore_ascii_case(b"tr")
+            || prefix.eq_ignore_ascii_case(b"ac")
+            || prefix.eq_ignore_ascii_case(b"sw"))
+        && bytes[2..].iter().all(u8::is_ascii_digit)
+}
+
+fn validate_output_analysis(extension: Option<&str>, result: &WaveformResult) -> Result<()> {
+    let extension = extension.ok_or_else(|| {
+        WaveformError::FormatError("HSPICE output requires a file extension".into())
+    })?;
+    let expected = if extension
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("tr"))
+    {
+        AnalysisType::Transient
+    } else if extension
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ac"))
+    {
+        AnalysisType::AC
+    } else {
+        AnalysisType::DC
+    };
+    let actual = if result.analysis == AnalysisType::Unknown {
+        AnalysisType::from_scale_name(result.scale_name())
+    } else {
+        result.analysis
+    };
+    if actual != expected {
+        return Err(WaveformError::FormatError(format!(
+            "{actual} waveform must use the matching HSPICE extension, not .{extension}"
+        )));
+    }
     Ok(())
 }
 
